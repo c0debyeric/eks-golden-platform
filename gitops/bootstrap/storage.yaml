@@ -1,0 +1,24 @@
+# storage — cluster default gp3 StorageClass. Sync-wave "-1" so the class exists BEFORE
+# any PVC-consuming app (Loki, Prometheus) tries to bind. Without this, those PVCs stay
+# Pending and their pods never schedule.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: storage
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/c0debyeric/eks-golden-platform.git
+    targetRevision: main
+    path: gitops/apps/storage
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [ServerSideApply=true]

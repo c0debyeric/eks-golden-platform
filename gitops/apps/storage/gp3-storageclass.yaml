@@ -1,0 +1,24 @@
+# gp3 StorageClass via the EBS CSI driver, marked cluster default.
+#
+# WHY: EKS ships only an in-tree `gp2` StorageClass (provisioner kubernetes.io/aws-ebs),
+# which is NOT default and uses the deprecated in-tree provisioner. Loki and Prometheus
+# request `gp3` PVCs; with no gp3 class their PVCs stay Pending forever
+# ("unbound immediate PersistentVolumeClaims") and the pods never schedule.
+#
+# gp3 is the golden standard: ~20% cheaper than gp2, baseline 3000 IOPS / 125 MB/s
+# decoupled from volume size. Uses the CSI provisioner (ebs.csi.aws.com) wired via the
+# EBS CSI Pod Identity (terraform/iam-pod-identity.tf).
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    # Make gp3 the default so any PVC without an explicit storageClassName lands here.
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer   # bind in the pod's AZ, avoids cross-AZ attach failures
+allowVolumeExpansion: true                 # grow PVCs without recreate
+reclaimPolicy: Delete
+parameters:
+  type: gp3
+  encrypted: "true"                        # encrypt all volumes at rest (KMS default key)
