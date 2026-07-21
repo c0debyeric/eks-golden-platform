@@ -1,0 +1,23 @@
+# otel-collector — plain manifests (OpenTelemetryCollector + Instrumentation CRs). Sync wave 3:
+# depends on the OTel Operator CRDs (wave 2) already existing.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: otel-collector
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/c0debyeric/eks-golden-platform.git
+    path: gitops/apps/otel-collector
+    targetRevision: main
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]

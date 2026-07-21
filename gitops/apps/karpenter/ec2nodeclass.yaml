@@ -1,0 +1,20 @@
+# Karpenter EC2NodeClass — how nodes are launched. Discovers subnets/SGs by the
+# karpenter.sh/discovery=<cluster> tag applied in Terraform (main.tf).
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  amiFamily: AL2023                # current default AMI family
+  amiSelectorTerms:
+    - alias: al2023@latest
+  role: eks-golden-karpenter       # node IAM role from the karpenter TF sub-module output
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: eks-golden
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: eks-golden
+  metadataOptions:
+    httpTokens: required           # IMDSv2 enforced
+    httpPutResponseHopLimit: 1     # pods can't reach IMDS to steal the node role

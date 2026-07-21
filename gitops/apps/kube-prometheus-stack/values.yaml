@@ -1,0 +1,48 @@
+# kube-prometheus-stack values — tuned for a cost-conscious portfolio cluster.
+# Levers: short retention + capped disk + modest requests + remoteWrite OFF (no managed-TSDB bill).
+prometheus:
+  prometheusSpec:
+    retention: 7d
+    retentionSize: "8GB"
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits: { memory: 1Gi }
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          resources:
+            requests:
+              storage: 10Gi
+    # remoteWrite intentionally omitted: no external TSDB cost.
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests: { cpu: 25m, memory: 64Mi }
+
+grafana:
+  enabled: true
+  # Admin password is sourced from a K8s Secret that External Secrets Operator materializes
+  # from AWS Secrets Manager (see gitops/apps/external-secrets/). Nothing sensitive in Git.
+  admin:
+    existingSecret: grafana-admin-credentials
+    userKey: admin-user
+    passwordKey: admin-password
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      access: proxy
+      url: http://loki-gateway.logging.svc.cluster.local
+  sidecar:
+    dashboards:
+      enabled: true          # auto-load ConfigMaps labeled grafana_dashboard=1
+      label: grafana_dashboard
+      searchNamespace: ALL
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+
+# Trim node-exporter/kube-state-metrics footprint slightly; defaults are fine otherwise.
+prometheus-node-exporter:
+  resources:
+    requests: { cpu: 25m, memory: 32Mi }

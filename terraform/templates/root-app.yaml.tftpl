@@ -1,0 +1,27 @@
+# Root app-of-apps. Terraform applies this once at bootstrap; ArgoCD then discovers every child
+# Application under gitops/bootstrap/ and reconciles the whole stack. Rendered by templatefile()
+# so the repo URL isn't hard-coded in two places.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: ${git_repo_url}
+    path: gitops/bootstrap
+    targetRevision: main
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true      # full GitOps: resources removed from Git are removed from the cluster
+      selfHeal: true   # drift is reverted to Git state
+    syncOptions:
+      - CreateNamespace=true

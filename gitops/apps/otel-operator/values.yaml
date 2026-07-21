@@ -1,0 +1,11 @@
+# OpenTelemetry Operator values. The operator installs the OpenTelemetryCollector +
+# Instrumentation CRDs; the actual collectors are CRs applied in gitops/apps/otel-collector/.
+manager:
+  resources:
+    requests: { cpu: 50m, memory: 96Mi }
+# Use the operator's bundled cert-manager-free self-signed webhook cert (no cert-manager dep).
+admissionWebhooks:
+  certManager:
+    enabled: false
+  autoGenerateCert:
+    enabled: true

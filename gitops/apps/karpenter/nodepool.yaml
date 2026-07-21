@@ -1,0 +1,31 @@
+# Karpenter NodePool — spot-first workload capacity with aggressive consolidation for cost.
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: default
+spec:
+  template:
+    spec:
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot", "on-demand"]        # spot-first, on-demand fallback
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64", "arm64"]           # allow Graviton (cheaper)
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["c", "m", "t"]
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["4"]                         # modern generations only
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: default
+      expireAfter: 720h                          # recycle nodes weekly (patching)
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized   # bin-pack + kill idle nodes
+    consolidateAfter: 1m
+  limits:
+    cpu: "16"                                    # hard ceiling = cost + blast-radius guardrail

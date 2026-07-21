@@ -1,0 +1,10 @@
+# External Secrets Operator values. The controller SA gets its AWS creds from the Pod Identity
+# association created in Terraform (iam-pod-identity.tf), scoped to secrets under eks-golden/*.
+serviceAccount:
+  create: true
+  name: external-secrets
+installCRDs: true
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi

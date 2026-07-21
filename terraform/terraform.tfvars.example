@@ -1,0 +1,14 @@
+# Example tfvars. Copy to terraform.tfvars (gitignored) and adjust.
+# The defaults in variables.tf already give a working cost-conscious portfolio cluster;
+# override here only to change region, naming, or flip to the production-HA posture.
+
+region             = "us-east-1"
+name               = "eks-golden"
+kubernetes_version = "1.33"
+
+# --- cost posture (portfolio defaults) ---
+single_nat_gateway     = true    # set false for one-NAT-per-AZ HA (~3x NAT cost)
+endpoint_public_access = true    # set false + SSM/bastion for hardened production
+
+# Point the app-of-apps at YOUR fork.
+git_repo_url = "https://github.com/c0debyeric/eks-golden-platform.git"

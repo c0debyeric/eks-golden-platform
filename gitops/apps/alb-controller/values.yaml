@@ -1,0 +1,11 @@
+# AWS Load Balancer Controller values. Credentials come from Pod Identity (Terraform), so no
+# IRSA annotation needed — just the SA name the Pod Identity association targets.
+clusterName: eks-golden          # must match var.name in Terraform
+serviceAccount:
+  create: true
+  name: aws-load-balancer-controller
+# Region/VPC auto-discovered from IMDS on the nodes.
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi

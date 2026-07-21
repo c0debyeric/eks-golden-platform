@@ -1,0 +1,48 @@
+# OpenTelemetry Collector — gateway (Deployment) that receives OTLP from apps and fans out:
+#   metrics -> Prometheus (remote-write), logs -> Loki native OTLP endpoint (otlphttp).
+# Traces would go to Tempo (out of scope; the pipeline is stubbed but commented).
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: gateway
+  namespace: observability
+spec:
+  mode: deployment
+  replicas: 1
+  resources:
+    requests: { cpu: 100m, memory: 192Mi }
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc: { endpoint: 0.0.0.0:4317 }
+          http: { endpoint: 0.0.0.0:4318 }
+    processors:
+      batch: {}
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+    exporters:
+      # METRICS -> Prometheus remote-write endpoint (kube-prometheus-stack).
+      prometheusremotewrite:
+        endpoint: http://prometheus-operated.monitoring.svc:9090/api/v1/write
+      # LOGS -> Loki native OTLP endpoint via otlphttp (the dedicated loki exporter is deprecated).
+      otlphttp/loki:
+        endpoint: http://loki-gateway.logging.svc.cluster.local/otlp
+      # TRACES -> Tempo (out of scope):
+      # otlp/tempo: { endpoint: tempo.tracing.svc:4317, tls: { insecure: true } }
+    service:
+      pipelines:
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [prometheusremotewrite]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [otlphttp/loki]
+        # traces:
+        #   receivers: [otlp]
+        #   processors: [memory_limiter, batch]
+        #   exporters: [otlp/tempo]

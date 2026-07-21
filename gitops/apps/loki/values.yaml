@@ -1,0 +1,58 @@
+# Loki values — SingleBinary (monolithic) mode, S3-backed. Cheapest mode for a portfolio cluster;
+# S3 storage means logs survive `make down`/`make up`. Auth to S3 via IRSA/Pod Identity (no keys).
+deploymentMode: SingleBinary
+
+loki:
+  auth_enabled: false          # single-tenant portfolio cluster
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: s3
+    bucketNames:
+      chunks: eks-golden-loki-chunks
+      ruler: eks-golden-loki-ruler
+    s3:
+      region: us-east-1        # credentials via serviceAccount role, not static keys
+  schemaConfig:
+    configs:
+      - from: "2024-04-01"
+        store: tsdb
+        object_store: s3
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+  limits_config:
+    retention_period: 168h     # 7 days
+  # Loki 3.x native OTLP endpoint (/otlp/v1/logs) is enabled by default; the OTel Collector
+  # ships logs here via the otlphttp exporter (see gitops/apps/otel-collector/).
+
+# ServiceAccount that Loki S3 access binds to (annotate with IRSA role ARN, or use Pod Identity
+# association targeting this SA — see docs/research/01 §3 and 03 §3).
+serviceAccount:
+  create: true
+  name: loki
+
+singleBinary:
+  replicas: 1
+  persistence:
+    enabled: true
+    storageClass: gp3
+    size: 10Gi
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+
+# Disable the microservices-mode components (we're monolithic).
+backend: { replicas: 0 }
+read: { replicas: 0 }
+write: { replicas: 0 }
+gateway:
+  enabled: true                # nginx gateway; Grafana + OTel target loki-gateway
+  replicas: 1
+
+# The bundled test/canary and self-monitoring add cost; off for a lean portfolio stack.
+test: { enabled: false }
+lokiCanary: { enabled: false }
+chunksCache: { enabled: false }
+resultsCache: { enabled: false }

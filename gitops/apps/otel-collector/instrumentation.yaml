@@ -1,0 +1,17 @@
+# Zero-code auto-instrumentation. Apps opt in with an annotation, e.g.:
+#   instrumentation.opentelemetry.io/inject-python: "true"
+# The operator injects the OTel SDK and points it at the gateway collector.
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: default
+  namespace: observability
+spec:
+  exporter:
+    endpoint: http://gateway-collector.observability.svc:4318
+  propagators:
+    - tracecontext
+    - baggage
+  sampler:
+    type: parentbased_traceidratio
+    argument: "0.25"        # sample 25% of traces to keep cost/volume down
