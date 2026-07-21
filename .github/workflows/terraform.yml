@@ -46,15 +46,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # DEBUG: decode the OIDC token's `sub` claim so we can compare it to the role trust policy.
-      # Prints only the subject (safe); remove once auth is confirmed working.
-      - name: Debug OIDC subject claim
-        run: |
-          TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r '.value')
-          echo "sub claim => $(echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.sub')"
-          echo "aud claim => $(echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq -r '.aud')"
-
       # Exchanges the GitHub OIDC token for short-lived AWS creds. No secrets stored.
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4

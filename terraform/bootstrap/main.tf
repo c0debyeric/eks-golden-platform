@@ -53,3 +53,15 @@ variable "allowed_ref" {
   type        = string
   default     = "ref:refs/heads/main"
 }
+
+variable "subject_override" {
+  description = <<-EOT
+    Full OIDC `sub` claim to trust, when non-empty. This account's GitHub OIDC provider has
+    immutable-numeric-ID subjects ENABLED, so the real sub is
+    "repo:<org>@<orgID>/<repo>@<repoID>:ref:refs/heads/main" — the plain name does NOT match.
+    Set this to the exact decoded sub (see docs/OIDC-SETUP.md for how to read it from a run).
+    Leave empty to fall back to the constructed repo:<org>/<repo>:<allowed_ref> form.
+  EOT
+  type        = string
+  default     = "repo:c0debyeric@52612730/eks-golden-platform@1307860662:ref:refs/heads/main"
+}

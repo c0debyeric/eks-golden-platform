@@ -58,9 +58,22 @@ the main module uses may not exist on first bootstrap.
 
 ## Security notes
 
-- **Trust is `StringEquals`, not `StringLike`.** The `sub` claim is matched exactly to
-  `repo:c0debyeric/eks-golden-platform:ref:refs/heads/main`. A wildcard here would let other repos
-  or branches assume the role — the #1 GitHub-OIDC mistake.
+- **Trust is `StringEquals`, not `StringLike`.** The `sub` claim is matched exactly. A wildcard
+  here would let other repos or branches assume the role — the #1 GitHub-OIDC mistake.
+- **This account's OIDC provider emits immutable numeric IDs in the `sub` claim.** The real
+  subject is `repo:c0debyeric@52612730/eks-golden-platform@1307860662:ref:refs/heads/main`, NOT
+  the plain `repo:c0debyeric/eks-golden-platform:...`. If you trust the plain form you get
+  `Not authorized to perform sts:AssumeRoleWithWebIdentity` even though everything looks correct.
+  The `subject_override` variable in `terraform/bootstrap/main.tf` holds the exact ID-augmented
+  subject. To read the real sub from a run, temporarily add a step:
+  ```yaml
+  - name: Debug OIDC subject
+    run: |
+      TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+        "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r '.value')
+      echo "$TOKEN" | cut -d. -f2 | base64 -d | jq -r '.sub'
+  ```
+  (If the org later disables immutable IDs, clear `subject_override` to fall back to the plain form.)
 - **`aud` is pinned to `sts.amazonaws.com`** so a token minted for another service can't be replayed.
 - **1-hour max session.** CI jobs are short; raise `max_session_duration` only if a plan/apply needs longer.
 - **AdministratorAccess** is attached because the main module provisions VPC+EKS+IAM+KMS+SQS (broad

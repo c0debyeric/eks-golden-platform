@@ -31,7 +31,11 @@ data "aws_iam_policy_document" "trust" {
     condition {
       test     = "StringEquals" # EXACT match — the single most important line for security
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_org}/${var.github_repo}:${var.allowed_ref}"]
+      # This account's provider emits immutable numeric IDs in the sub claim, so we trust the
+      # exact decoded subject rather than the plain repo:<org>/<repo> form (which never matches).
+      values = [
+        var.subject_override != "" ? var.subject_override : "repo:${var.github_org}/${var.github_repo}:${var.allowed_ref}"
+      ]
     }
   }
 }
