@@ -11,11 +11,11 @@
 # per-repo. We look the existing one up and reference its ARN.
 
 terraform {
-  required_version = ">= 1.9"
+  required_version = ">= 1.15"
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 5.70"
+      version = ">= 6.0"
     }
   }
   # Local state on purpose (see header). Do NOT point this at the same S3 backend the main

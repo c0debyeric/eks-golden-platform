@@ -18,7 +18,7 @@ permissions:
   id-token: write
 
 env:
-  TF_VERSION: "1.11.4" # >= 1.11 for S3-native state locking (use_lockfile)
+  TF_VERSION: "1.15.8" # latest stable; satisfies use_lockfile (>= 1.11) + provider majors
   AWS_REGION: us-east-1
 
 jobs:

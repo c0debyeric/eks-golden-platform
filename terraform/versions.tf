@@ -2,21 +2,21 @@
 # Convention: pin a floor with `>=` at the current major and keep it uniform across the repo
 # (avoids `~>` lock-in while still preventing an accidental jump to an untested next major).
 terraform {
-  # >= 1.11: required for S3-native state locking (use_lockfile) — no DynamoDB table.
-  required_version = ">= 1.11"
+  # >= 1.15: latest stable line; also satisfies use_lockfile (S3-native locking, needs >= 1.11).
+  required_version = ">= 1.15"
 
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 5.70"
+      version = ">= 6.0"
     }
     helm = {
       source  = "hashicorp/helm"
-      version = ">= 2.15"
+      version = ">= 3.0"
     }
     kubernetes = {
       source  = "hashicorp/kubernetes"
-      version = ">= 2.33"
+      version = ">= 3.0"
     }
     # kubectl provider: applies raw manifests (the root app-of-apps) that the
     # kubernetes provider can't model cleanly as a typed resource.
@@ -27,7 +27,7 @@ terraform {
     # http: fetches the upstream AWS LB Controller IAM policy JSON at apply time.
     http = {
       source  = "hashicorp/http"
-      version = ">= 3.4"
+      version = ">= 3.6"
     }
   }
 
