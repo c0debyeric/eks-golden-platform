@@ -80,3 +80,44 @@ resource "aws_eks_pod_identity_association" "alb_controller" {
   service_account = "aws-load-balancer-controller"
   role_arn        = aws_iam_role.alb_controller.arn
 }
+
+########################################
+# EBS CSI Driver -> EC2 EBS volume lifecycle (via Pod Identity)
+########################################
+# WHY: the aws-ebs-csi-driver add-on (main.tf) ships the controller with NO AWS
+# credentials of its own. Without an IAM identity the controller's health-check
+# dry-run (ec2:DescribeAvailabilityZones) fails with "no EC2 IMDS role found",
+# the controller CrashLoopBackOffs, and the add-on hangs in CREATING until the
+# 20m Terraform timeout trips. The EKS module's create_pod_identity_association
+# only covers Karpenter — it does NOT wire the CSI driver. We must associate the
+# controller SA (kube-system/ebs-csi-controller-sa) with a role that carries the
+# AWS-managed AmazonEBSCSIDriverPolicy so PVCs (Prometheus/Loki/Grafana) can bind.
+data "aws_iam_policy_document" "ebs_csi_assume" {
+  statement {
+    actions = ["sts:AssumeRole", "sts:TagSession"]
+    principals {
+      type        = "Service"
+      identifiers = ["pods.eks.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ebs_csi" {
+  name               = "${var.name}-ebs-csi-driver"
+  assume_role_policy = data.aws_iam_policy_document.ebs_csi_assume.json
+  tags               = var.tags
+}
+
+# AWS-managed policy is the canonical, maintained grant for this exact driver —
+# preferred over a hand-rolled JSON so it tracks new EC2 volume actions upstream.
+resource "aws_iam_role_policy_attachment" "ebs_csi" {
+  role       = aws_iam_role.ebs_csi.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
+resource "aws_eks_pod_identity_association" "ebs_csi" {
+  cluster_name    = module.eks.cluster_name
+  namespace       = "kube-system"
+  service_account = "ebs-csi-controller-sa"
+  role_arn        = aws_iam_role.ebs_csi.arn
+}
