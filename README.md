@@ -77,9 +77,10 @@ messaging-app legibility.)*
 
 ## Prerequisites
 
-- Terraform >= 1.9, AWS CLI v2, `kubectl`, `helm`
+- Terraform >= 1.11, AWS CLI v2, `kubectl`, `helm`
 - AWS credentials with permissions to create VPC/EKS/IAM (an admin-ish role)
-- An **S3 bucket + DynamoDB lock table** for Terraform remote state
+- An **S3 bucket** for Terraform remote state (created by `terraform/bootstrap/`). State locking
+  is **S3-native** (`use_lockfile = true`, Terraform >= 1.11) — **no DynamoDB table**.
 - Two S3 buckets for Loki: `eks-golden-loki-chunks`, `eks-golden-loki-ruler`
 - A secret in AWS Secrets Manager at `eks-golden/grafana` with keys `admin-user`, `admin-password`
 

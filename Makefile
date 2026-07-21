@@ -17,8 +17,8 @@ help: ## Show this help
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: init
-init: ## terraform init (expects backend config via backend.hcl or -backend-config)
-	cd $(TF_DIR) && $(TF) init
+init: ## terraform init with the S3 backend (copy backend.hcl.example -> backend.hcl first)
+	cd $(TF_DIR) && $(TF) init -backend-config=backend.hcl
 
 .PHONY: fmt
 fmt: ## terraform fmt -check (CI gate)

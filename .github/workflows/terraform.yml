@@ -18,7 +18,7 @@ permissions:
   id-token: write
 
 env:
-  TF_VERSION: "1.9.8"
+  TF_VERSION: "1.11.4" # >= 1.11 for S3-native state locking (use_lockfile)
   AWS_REGION: us-east-1
 
 jobs:
@@ -61,9 +61,13 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      # Requires the S3 backend to exist. Provide backend config via repo variables/secrets or a
-      # committed backend.hcl (bucket name is not sensitive). Plan is read-only — safe in CI.
+      # Backend config passed inline (bucket name + region are NOT secret). use_lockfile is in
+      # the versions.tf backend block. Set the TF_STATE_BUCKET repo variable to your state bucket.
       - name: terraform init
-        run: terraform -chdir=terraform init -input=false
+        run: |
+          terraform -chdir=terraform init -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=eks-golden-platform/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
       - name: terraform plan
         run: terraform -chdir=terraform plan -input=false -no-color

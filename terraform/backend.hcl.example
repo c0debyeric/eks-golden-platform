@@ -1,0 +1,8 @@
+# Example backend config. Copy to backend.hcl and fill in your state bucket (from the bootstrap
+# module's `state_bucket` output), then: `terraform init -backend-config=backend.hcl`.
+# State locking is S3-native (use_lockfile) — no DynamoDB table required (Terraform >= 1.11).
+bucket       = "eks-golden-platform-tfstate-<ACCOUNT_ID>"
+key          = "eks-golden-platform/terraform.tfstate"
+region       = "us-east-1"
+encrypt      = true
+use_lockfile = true
