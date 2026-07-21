@@ -8,7 +8,7 @@ spec:
   amiFamily: AL2023                # current default AMI family
   amiSelectorTerms:
     - alias: al2023@latest
-  role: eks-golden-karpenter       # node IAM role from the karpenter TF sub-module output
+  role: eks-golden-karpenter       # stable node role name pinned in module.karpenter (main.tf)
   subnetSelectorTerms:
     - tags:
         karpenter.sh/discovery: eks-golden

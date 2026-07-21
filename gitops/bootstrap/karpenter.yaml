@@ -1,0 +1,52 @@
+# karpenter — the Karpenter controller (Helm chart from the OCI registry). Installs the
+# NodePool/EC2NodeClass CRDs + the controller Deployment.
+#
+# WHY sync-wave "-2": the karpenter-nodepools app (wave 0) applies NodePool/EC2NodeClass
+# custom resources — those CRDs don't exist until THIS chart installs them. Without the
+# controller, nodepools sync fails with "one or more synchronization tasks are not valid"
+# and no new nodes are ever provisioned (pods stay Pending with "Too many pods").
+#
+# Controller credentials: EKS Pod Identity, associated in Terraform via the karpenter
+# sub-module (create_pod_identity_association=true) to the kube-system/karpenter SA.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: karpenter
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: public.ecr.aws/karpenter
+    chart: karpenter
+    # v1.0.x serves the karpenter.sh/v1 + karpenter.k8s.aws/v1 stable APIs the
+    # nodepool/ec2nodeclass manifests use; compatible with EKS 1.33.
+    targetRevision: 1.0.8
+    helm:
+      valuesObject:
+        settings:
+          clusterName: eks-golden
+          # Endpoint + interruption queue from Terraform (module.karpenter / cluster).
+          clusterEndpoint: https://649F2C67144C457AE3C5FCFFF29BF739.gr7.us-east-1.eks.amazonaws.com
+          interruptionQueue: Karpenter-eks-golden
+        serviceAccount:
+          # Pod Identity targets this SA name; do NOT add an IRSA role annotation.
+          create: true
+          name: karpenter
+        replicas: 1
+        controller:
+          resources:
+            requests: { cpu: 200m, memory: 256Mi }
+            limits: { memory: 512Mi }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]
+    retry:
+      limit: 5
+      backoff: { duration: 15s, factor: 2, maxDuration: 3m }
