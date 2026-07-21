@@ -14,3 +14,12 @@ admissionWebhooks:
     enabled: false
   autoGenerateCert:
     enabled: true
+# WHY disable the operator's own metrics ServiceMonitor: the operator CREATES this
+# ServiceMonitor on startup but does NOT reconcile it (no CreateOrUpdate). If the manager
+# then crashes for any reason, the orphaned ServiceMonitor persists and every subsequent
+# startup dies with 'servicemonitors ... already exists' — a self-inflicted CrashLoop.
+# Prometheus still scrapes the operator via other means; disabling this avoids the trap.
+metrics:
+  enabled: false
+kubeRBACProxy:
+  enabled: false
