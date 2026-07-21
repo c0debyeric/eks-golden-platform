@@ -70,4 +70,7 @@ jobs:
             -backend-config="key=eks-golden-platform/terraform.tfstate" \
             -backend-config="region=${{ env.AWS_REGION }}"
       - name: terraform plan
-        run: terraform -chdir=terraform plan -input=false -no-color
+        # -lock=false: a read-only plan does not need to WRITE state, so it must not
+        # acquire the S3 state lock. Without this, a plan on every push races (and blocks)
+        # any concurrent `terraform apply` with a 412 PreconditionFailed lock error.
+        run: terraform -chdir=terraform plan -input=false -no-color -lock=false
