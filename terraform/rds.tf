@@ -26,7 +26,7 @@ resource "aws_security_group" "rds" {
   count = var.create_rds ? 1 : 0
 
   name        = "${var.name}-rds"
-  description = "PostgreSQL access for ${var.name} — EKS nodes only"
+  description = "PostgreSQL access for ${var.name} - EKS nodes only"
   vpc_id      = module.vpc.vpc_id
   tags        = var.tags
 }
