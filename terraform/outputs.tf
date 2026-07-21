@@ -34,3 +34,25 @@ output "external_secrets_role_arn" {
   description = "IAM role ARN associated with the External Secrets Operator service account."
   value       = aws_iam_role.external_secrets.arn
 }
+
+########################################
+# RDS (only populated when var.create_rds = true)
+########################################
+output "rds_primary_endpoint" {
+  description = "Writer endpoint of the RDS primary — point writes + write-through reads here."
+  value       = var.create_rds ? module.rds_primary[0].db_instance_endpoint : null
+}
+
+output "rds_replica_endpoints" {
+  description = "Reader endpoints of the RDS read replicas — point read-heavy queries here."
+  value       = var.create_rds ? [for r in module.rds_replica : r.db_instance_endpoint] : []
+}
+
+output "rds_master_secret_arn" {
+  description = <<-EOT
+    Secrets Manager ARN holding the RDS-managed master credentials (username/password).
+    Apps consume this via External Secrets Operator, never plaintext. Null unless create_rds.
+  EOT
+  value       = var.create_rds ? module.rds_primary[0].db_instance_master_user_secret_arn : null
+}
+

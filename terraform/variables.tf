@@ -66,6 +66,30 @@ variable "bootstrap_instance_types" {
   default     = ["t3.medium"]
 }
 
+variable "create_rds" {
+  description = <<-EOT
+    Toggle the demonstration RDS PostgreSQL deployment (Multi-AZ primary + 2 read replicas)
+    into the isolated database subnet tier. Default false so the base platform stays cheap
+    and fast to stand up; set true in tfvars to provision the ~4-instance database topology
+    (~$50/mo on db.t4g.micro). See rds.tf and docs/NETWORK-ARCHITECTURE.md.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "rds_instance_class" {
+  description = "Instance class for the RDS primary and its read replicas. db.t4g.micro = cheapest Graviton."
+  type        = string
+  default     = "db.t4g.micro"
+}
+
+variable "rds_engine_version" {
+  description = "PostgreSQL engine version for the RDS demo. Keep current for security patches."
+  type        = string
+  default     = "16.4"
+}
+
+
 variable "argocd_chart_version" {
   description = "Pinned argo-cd Helm chart version installed at bootstrap."
   type        = string
