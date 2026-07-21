@@ -24,9 +24,13 @@ variable "kubernetes_version" {
 }
 
 variable "vpc_cidr" {
-  description = "CIDR block for the VPC."
+  description = <<-EOT
+    CIDR block for the VPC. Chosen to NOT overlap other VPCs in the sandbox account:
+    ExampleVPC (10.0.0.0/16), example-vpc-b (10.0.0.0/24), example-vpc-c (10.0.0.0/24).
+    10.20.0.0/16 is clear of all three and leaves room for 3x /20 private + /24 public subnets.
+  EOT
   type        = string
-  default     = "10.0.0.0/16"
+  default     = "10.20.0.0/16"
 }
 
 variable "az_count" {
