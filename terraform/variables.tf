@@ -86,7 +86,7 @@ variable "rds_instance_class" {
 variable "rds_engine_version" {
   description = "PostgreSQL engine version for the RDS demo. Keep current for security patches."
   type        = string
-  default     = "16.4"
+  default     = "18.4"
 }
 
 

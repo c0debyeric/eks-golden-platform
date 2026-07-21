@@ -14,6 +14,11 @@ locals {
   # The two AZs to pin read replicas into. The primary+standby consume 2 of the 3 DB subnets;
   # placing replicas in us-east-1b and us-east-1c spreads read capacity across AZs.
   rds_replica_azs = var.create_rds ? ["us-east-1b", "us-east-1c"] : []
+
+  # Derive the parameter-group family + major from the engine version so they can never drift
+  # out of sync with rds_engine_version (e.g. "18.4" -> "postgres18", major "18").
+  rds_major        = split(".", var.rds_engine_version)[0]
+  rds_param_family = "postgres${local.rds_major}"
 }
 
 ########################################
@@ -58,8 +63,8 @@ module "rds_primary" {
 
   engine               = "postgres"
   engine_version       = var.rds_engine_version
-  family               = "postgres16" # DB parameter group family
-  major_engine_version = "16"         # (ignored for postgres option group — none created)
+  family               = local.rds_param_family # DB parameter group family (derived from version)
+  major_engine_version = local.rds_major        # (ignored for postgres option group — none created)
   instance_class       = var.rds_instance_class
 
   allocated_storage     = 20
@@ -126,7 +131,7 @@ module "rds_replica" {
 
   engine         = "postgres"
   engine_version = var.rds_engine_version
-  family         = "postgres16"
+  family         = local.rds_param_family
   instance_class = var.rds_instance_class
 
   # A replica inherits storage from its source; it does NOT create its own subnet group
