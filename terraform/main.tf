@@ -12,9 +12,14 @@ data "aws_availability_zones" "available" {
 locals {
   azs = slice(data.aws_availability_zones.available.names, 0, var.az_count)
 
-  # Subnet CIDRs derived from the VPC CIDR: /20 private + /24 public per AZ.
-  private_subnets = [for i in range(var.az_count) : cidrsubnet(var.vpc_cidr, 4, i)]
-  public_subnets  = [for i in range(var.az_count) : cidrsubnet(var.vpc_cidr, 8, i + 48)]
+  # Subnet CIDRs derived from the VPC CIDR, three tiers per AZ:
+  #   private  /20  (10.20.0.0 .. 10.20.47.x)  — EKS nodes + pods (large: pods burn IPs fast)
+  #   public   /24  (10.20.48.x .. 10.20.50.x) — ALBs + NAT gateways
+  #   database /24  (10.20.64.x .. 10.20.66.x) — RDS/data tier, ISOLATED (no NAT/IGW route)
+  # The +48 / +64 offsets keep the /24 tiers clear of the /20 private block and each other.
+  private_subnets  = [for i in range(var.az_count) : cidrsubnet(var.vpc_cidr, 4, i)]
+  public_subnets   = [for i in range(var.az_count) : cidrsubnet(var.vpc_cidr, 8, i + 48)]
+  database_subnets = [for i in range(var.az_count) : cidrsubnet(var.vpc_cidr, 8, i + 64)]
 }
 
 ########################################
@@ -30,6 +35,16 @@ module "vpc" {
 
   private_subnets = local.private_subnets
   public_subnets  = local.public_subnets
+
+  # Dedicated data tier for RDS/ElastiCache. The module builds an RDS DB subnet group
+  # (create_database_subnet_group) spanning these subnets across all AZs — RDS requires
+  # a subnet group covering >=2 AZs even for a single-AZ instance. Crucially, these
+  # subnets get their OWN route table with NO NAT/IGW route (create_database_nat_gateway_route
+  # left false), so a compromised database host physically cannot egress to the internet.
+  # Defense-in-depth: app/data segmentation at the routing layer, on top of security groups.
+  database_subnets                   = local.database_subnets
+  create_database_subnet_group       = true
+  create_database_subnet_route_table = true
 
   enable_nat_gateway   = true
   single_nat_gateway   = var.single_nat_gateway # cost lever (see variables.tf)

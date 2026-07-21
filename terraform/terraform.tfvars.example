@@ -1,14 +1,20 @@
 # Example tfvars. Copy to terraform.tfvars (gitignored) and adjust.
-# The defaults in variables.tf already give a working cost-conscious portfolio cluster;
-# override here only to change region, naming, or flip to the production-HA posture.
+#
+# NOTE ON DEFAULTS: variables.tf now defaults to the PRODUCTION-GRADE posture
+# (one NAT gateway per AZ, dedicated database subnet tier). That is the recommended
+# best-practice baseline. If you're running a throwaway PORTFOLIO/DEMO cluster and want
+# to cut the NAT bill by ~2/3, copy this file to terraform.tfvars and set
+# single_nat_gateway = true (see the cost posture block below).
 
 region             = "us-east-1"
 name               = "eks-golden"
 kubernetes_version = "1.33"
 
-# --- cost posture (portfolio defaults) ---
-single_nat_gateway     = true    # set false for one-NAT-per-AZ HA (~3x NAT cost)
-endpoint_public_access = true    # set false + SSM/bastion for hardened production
+# --- cost vs. HA posture ---
+# Defaults (omit these) = production: 1 NAT per AZ (~$97/mo), full AZ-fault isolation.
+# Uncomment for the cheap demo posture:
+# single_nat_gateway   = true   # one shared NAT (~$32/mo) — single-AZ SPOF for all egress
+endpoint_public_access = true   # set false + SSM/bastion for the hardened production posture
 
 # Point the app-of-apps at YOUR fork.
 git_repo_url = "https://github.com/c0debyeric/eks-golden-platform.git"

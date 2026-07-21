@@ -27,7 +27,8 @@ variable "vpc_cidr" {
   description = <<-EOT
     CIDR block for the VPC. Chosen to NOT overlap other VPCs in the sandbox account:
     ExampleVPC (10.0.0.0/16), example-vpc-b (10.0.0.0/24), example-vpc-c (10.0.0.0/24).
-    10.20.0.0/16 is clear of all three and leaves room for 3x /20 private + /24 public subnets.
+    10.20.0.0/16 is clear of all three, with room for 3x /20 private + 3x /24 public +
+    3x /24 database subnets (see the subnet-CIDR derivation in main.tf locals).
   EOT
   type        = string
   default     = "10.20.0.0/16"
@@ -41,11 +42,13 @@ variable "az_count" {
 
 variable "single_nat_gateway" {
   description = <<-EOT
-    Cost lever. true = one shared NAT GW (~$32/mo, 1-AZ SPOF) for a portfolio cluster.
-    Flip to false for one NAT per AZ (~$97/mo, full HA) as the "production" posture.
+    NAT gateway HA vs cost lever. Default false = one NAT per AZ (~$97/mo, full HA) —
+    the RECOMMENDED production posture: an AZ's NAT failure only affects that AZ's private
+    egress, and there's no cross-AZ NAT data hop. Set true in tfvars for one shared NAT
+    (~$32/mo, single-AZ SPOF for all private egress) when running a throwaway demo cluster.
   EOT
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "endpoint_public_access" {
