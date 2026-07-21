@@ -78,3 +78,34 @@ An in-cluster app reaches it via the RDS endpoint DNS; egress from pods to the D
 intra-VPC (private → database, both LOCAL routes). Credentials should flow through
 External Secrets Operator → Secrets Manager (the pattern already wired for Grafana), not
 static env vars.
+
+## Deployed RDS topology (rds.tf, gated on `create_rds`)
+
+The repo ships a working demonstration database into the isolated tier — Multi-AZ primary
+plus two read replicas — showing that **HA (Multi-AZ standby) and read scaling (read
+replicas) are distinct mechanisms**:
+
+```
+         database tier (NAT-less, 3 AZs)
+         ┌──────────────────────────────────────────────┐
+  1a ───▶│ PRIMARY  (writer)  ──sync──▶  STANDBY  (1b)   │  Multi-AZ = HA/failover
+         │   │                                            │  standby NOT readable
+         │   ├──async──▶  READ REPLICA 1  (1b)  ◀── reads │  read scaling +
+         │   └──async──▶  READ REPLICA 2  (1c)  ◀── reads │  cross-AZ resilience
+         └──────────────────────────────────────────────┘
+  writes ──▶ rds_primary_endpoint
+  reads  ──▶ rds_replica_endpoints[0], [1]
+```
+
+- **Multi-AZ standby** (`multi_az = true`) — synchronous, auto-promoted on primary failure,
+  **never readable**. Solves availability.
+- **Read replicas** (`replicate_source_db`) — async, each with its own endpoint, pinned to
+  us-east-1b / us-east-1c. Solve read scaling. Manual promotion for DR.
+- **Security**: RDS SG allows `:5432` from the EKS **node** SG only (not the whole VPC CIDR).
+- **Credentials**: `manage_master_user_password = true` → RDS-managed Secrets Manager secret
+  (`rds_master_secret_arn` output); no plaintext in state/tfvars. Apps consume via ESO.
+- **Cost gate**: `create_rds` defaults false. Set `create_rds = true` in `terraform.tfvars`
+  for the ~4-instance topology (~$50/mo on db.t4g.micro).
+- **Prod flips**: set `deletion_protection = true` and `skip_final_snapshot = false` before
+  putting real data behind it.
+
