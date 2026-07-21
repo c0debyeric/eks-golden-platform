@@ -1,10 +1,10 @@
 # IAM roles for workloads that touch AWS, wired via EKS Pod Identity associations.
 # Pod Identity (not IRSA) so the associations are cluster-agnostic and survive teardown/rebuild.
 
-########################################
-# External Secrets Operator -> AWS Secrets Manager (read-only)
-########################################
-data "aws_iam_policy_document" "eso_assume" {
+# Shared trust policy: every Pod Identity role is assumed by the same EKS service principal.
+# Deduped here so the 4 workload roles below reference ONE document instead of copy-pasting
+# an identical assume-role block each. Adding a 5th workload role costs one line, not a block.
+data "aws_iam_policy_document" "pod_identity_assume" {
   statement {
     actions = ["sts:AssumeRole", "sts:TagSession"]
     principals {
@@ -14,9 +14,12 @@ data "aws_iam_policy_document" "eso_assume" {
   }
 }
 
+########################################
+# External Secrets Operator -> AWS Secrets Manager (read-only)
+########################################
 resource "aws_iam_role" "external_secrets" {
   name               = "${var.name}-external-secrets"
-  assume_role_policy = data.aws_iam_policy_document.eso_assume.json
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_assume.json
   tags               = var.tags
 }
 
@@ -46,19 +49,9 @@ resource "aws_eks_pod_identity_association" "external_secrets" {
 ########################################
 # AWS Load Balancer Controller -> ELB/EC2 (via Pod Identity)
 ########################################
-data "aws_iam_policy_document" "alb_assume" {
-  statement {
-    actions = ["sts:AssumeRole", "sts:TagSession"]
-    principals {
-      type        = "Service"
-      identifiers = ["pods.eks.amazonaws.com"]
-    }
-  }
-}
-
 resource "aws_iam_role" "alb_controller" {
   name               = "${var.name}-alb-controller"
-  assume_role_policy = data.aws_iam_policy_document.alb_assume.json
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_assume.json
   tags               = var.tags
 }
 
@@ -84,7 +77,7 @@ resource "aws_eks_pod_identity_association" "alb_controller" {
 ########################################
 # EBS CSI Driver -> EC2 EBS volume lifecycle (via Pod Identity)
 ########################################
-# WHY: the aws-ebs-csi-driver add-on (main.tf) ships the controller with NO AWS
+# WHY: the aws-ebs-csi-driver add-on (cluster.tf) ships the controller with NO AWS
 # credentials of its own. Without an IAM identity the controller's health-check
 # dry-run (ec2:DescribeAvailabilityZones) fails with "no EC2 IMDS role found",
 # the controller CrashLoopBackOffs, and the add-on hangs in CREATING until the
@@ -92,19 +85,9 @@ resource "aws_eks_pod_identity_association" "alb_controller" {
 # only covers Karpenter — it does NOT wire the CSI driver. We must associate the
 # controller SA (kube-system/ebs-csi-controller-sa) with a role that carries the
 # AWS-managed AmazonEBSCSIDriverPolicy so PVCs (Prometheus/Loki/Grafana) can bind.
-data "aws_iam_policy_document" "ebs_csi_assume" {
-  statement {
-    actions = ["sts:AssumeRole", "sts:TagSession"]
-    principals {
-      type        = "Service"
-      identifiers = ["pods.eks.amazonaws.com"]
-    }
-  }
-}
-
 resource "aws_iam_role" "ebs_csi" {
   name               = "${var.name}-ebs-csi-driver"
-  assume_role_policy = data.aws_iam_policy_document.ebs_csi_assume.json
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_assume.json
   tags               = var.tags
 }
 
@@ -131,19 +114,9 @@ resource "aws_eks_pod_identity_association" "ebs_csi" {
 # so without this Loki's ingester/compactor fail every S3 PutObject/GetObject and
 # the app never reaches Healthy. Scope: only the two project buckets, only the
 # object + bucket-list actions Loki needs (least-privilege, not s3:*).
-data "aws_iam_policy_document" "loki_assume" {
-  statement {
-    actions = ["sts:AssumeRole", "sts:TagSession"]
-    principals {
-      type        = "Service"
-      identifiers = ["pods.eks.amazonaws.com"]
-    }
-  }
-}
-
 resource "aws_iam_role" "loki" {
   name               = "${var.name}-loki"
-  assume_role_policy = data.aws_iam_policy_document.loki_assume.json
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_assume.json
   tags               = var.tags
 }
 
