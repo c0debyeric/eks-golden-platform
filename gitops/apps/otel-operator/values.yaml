@@ -8,18 +8,18 @@ manager:
     repository: otel/opentelemetry-collector-contrib
   resources:
     requests: { cpu: 50m, memory: 96Mi }
+  # The operator's own metrics ServiceMonitor is opt-in; keep it off so the operator never
+  # tries to create a ServiceMonitor it doesn't reconcile (older charts crash-looped on the
+  # resulting 'already exists' after any restart).
+  serviceMonitor:
+    enabled: false
 # Use the operator's bundled cert-manager-free self-signed webhook cert (no cert-manager dep).
 admissionWebhooks:
   certManager:
     enabled: false
   autoGenerateCert:
     enabled: true
-# WHY disable the operator's own metrics ServiceMonitor: the operator CREATES this
-# ServiceMonitor on startup but does NOT reconcile it (no CreateOrUpdate). If the manager
-# then crashes for any reason, the orphaned ServiceMonitor persists and every subsequent
-# startup dies with 'servicemonitors ... already exists' — a self-inflicted CrashLoop.
-# Prometheus still scrapes the operator via other means; disabling this avoids the trap.
-metrics:
-  enabled: false
-kubeRBACProxy:
-  enabled: false
+    # Regenerate a matching key/cert on every helm upgrade so the webhook config's CA
+    # bundle and the serving cert never drift (drift = "x509: certificate signed by
+    # unknown authority" on the collector webhook).
+    recreate: true
