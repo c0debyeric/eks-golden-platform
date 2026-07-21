@@ -1,6 +1,11 @@
 # OpenTelemetry Operator values. The operator installs the OpenTelemetryCollector +
 # Instrumentation CRDs; the actual collectors are CRs applied in gitops/apps/otel-collector/.
 manager:
+  # REQUIRED by the chart (default was removed upstream to force an explicit choice):
+  # the image the operator uses when a Collector CR doesn't pin its own image. contrib
+  # carries the full receiver/exporter/processor set a platform collector needs.
+  collectorImage:
+    repository: otel/opentelemetry-collector-contrib
   resources:
     requests: { cpu: 50m, memory: 96Mi }
 # Use the operator's bundled cert-manager-free self-signed webhook cert (no cert-manager dep).
