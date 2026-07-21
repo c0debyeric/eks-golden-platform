@@ -121,3 +121,54 @@ resource "aws_eks_pod_identity_association" "ebs_csi" {
   service_account = "ebs-csi-controller-sa"
   role_arn        = aws_iam_role.ebs_csi.arn
 }
+
+########################################
+# Loki -> S3 (chunks + ruler buckets) via Pod Identity
+########################################
+# WHY: Loki runs in SingleBinary mode backed by S3 (gitops/apps/loki/values.yaml)
+# and authenticates to S3 via its service account's identity — NO static keys.
+# Like the EBS CSI driver, the loki SA has no credentials unless we associate it,
+# so without this Loki's ingester/compactor fail every S3 PutObject/GetObject and
+# the app never reaches Healthy. Scope: only the two project buckets, only the
+# object + bucket-list actions Loki needs (least-privilege, not s3:*).
+data "aws_iam_policy_document" "loki_assume" {
+  statement {
+    actions = ["sts:AssumeRole", "sts:TagSession"]
+    principals {
+      type        = "Service"
+      identifiers = ["pods.eks.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "loki" {
+  name               = "${var.name}-loki"
+  assume_role_policy = data.aws_iam_policy_document.loki_assume.json
+  tags               = var.tags
+}
+
+data "aws_iam_policy_document" "loki_s3" {
+  # Bucket-level: Loki lists objects to discover chunks/index.
+  statement {
+    actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
+    resources = ["arn:aws:s3:::${var.name}-loki-chunks", "arn:aws:s3:::${var.name}-loki-ruler"]
+  }
+  # Object-level: read/write/delete chunks + ruler rules within those buckets.
+  statement {
+    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    resources = ["arn:aws:s3:::${var.name}-loki-chunks/*", "arn:aws:s3:::${var.name}-loki-ruler/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "loki_s3" {
+  name   = "loki-s3-access"
+  role   = aws_iam_role.loki.id
+  policy = data.aws_iam_policy_document.loki_s3.json
+}
+
+resource "aws_eks_pod_identity_association" "loki" {
+  cluster_name    = module.eks.cluster_name
+  namespace       = "loki"
+  service_account = "loki"
+  role_arn        = aws_iam_role.loki.arn
+}

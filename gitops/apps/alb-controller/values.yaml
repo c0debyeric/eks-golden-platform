@@ -4,7 +4,19 @@ clusterName: eks-golden          # must match var.name in Terraform
 serviceAccount:
   create: true
   name: aws-load-balancer-controller
-# Region/VPC auto-discovered from IMDS on the nodes.
+# WHY region + vpcId are REQUIRED (not auto-discovered): with EKS Pod Identity the controller
+# pod has NO IMDS access (node metadata hop limit is 1, and pods aren't on the host network),
+# so the default "discover region/VPC from IMDS" path fails with
+# "failed to get VPC ID: ... ec2imds: GetMetadata ... context deadline exceeded" and the
+# controller CrashLoopBackOffs. Its mutating webhook then blocks EVERY Service create
+# cluster-wide, stalling the entire app-of-apps sync. Passing these explicitly is the
+# documented Pod-Identity requirement.
+region: us-east-1
+# NOTE: vpcId is environment-specific — it changes on a fresh `terraform apply`. For a
+# reproducible bring-up, read the live value with:
+#   aws eks describe-cluster --name eks-golden --query cluster.resourcesVpcConfig.vpcId
+# and update this field (or template it via an ApplicationSet parameter). See docs/GITOPS.md.
+vpcId: vpc-0c53049f6bb190614
 resources:
   requests:
     cpu: 50m
