@@ -1,0 +1,47 @@
+# cert-manager — issues/renews TLS certs declaratively (no Helm hooks). Required by the
+# OpenTelemetry Operator's admission webhook: the chart's autoGenerateCert path relies on
+# Helm pre-install/pre-upgrade hooks, which ArgoCD does NOT execute like Helm does, so the
+# webhook cert secret is never created (operator pod FailedMount, webhook untrusted ->
+# "x509: certificate signed by unknown authority" on every OpenTelemetryCollector apply).
+# cert-manager is the ArgoCD-native fix and a standard EKS platform component.
+#
+# sync-wave "-1": cert-manager + its CRDs must exist before the OTel operator (wave 2)
+# requests a Certificate for its webhook.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.16.2
+    helm:
+      valuesObject:
+        # installCRDs is deprecated in favor of crds.enabled; set the current key so
+        # cert-manager's CRDs are managed by this release (ArgoCD applies them directly).
+        crds:
+          enabled: true
+        resources:
+          requests: { cpu: 25m, memory: 64Mi }
+        webhook:
+          resources:
+            requests: { cpu: 25m, memory: 48Mi }
+        cainjector:
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]
+    retry:
+      limit: 5
+      backoff: { duration: 15s, factor: 2, maxDuration: 3m }

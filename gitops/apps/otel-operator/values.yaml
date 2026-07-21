@@ -13,13 +13,13 @@ manager:
   # resulting 'already exists' after any restart).
   serviceMonitor:
     enabled: false
-# Use the operator's bundled cert-manager-free self-signed webhook cert (no cert-manager dep).
+# Webhook cert via cert-manager (ArgoCD-native, declarative). We do NOT use the chart's
+# autoGenerateCert path because it depends on Helm pre-install hooks that ArgoCD doesn't
+# run, leaving the webhook cert secret uncreated (pod FailedMount + untrusted webhook).
+# cert-manager (gitops/bootstrap/cert-manager.yaml, sync-wave -1) issues the self-signed
+# webhook cert and cainjector keeps the webhook configs' CA bundle in sync automatically.
 admissionWebhooks:
   certManager:
-    enabled: false
-  autoGenerateCert:
     enabled: true
-    # Regenerate a matching key/cert on every helm upgrade so the webhook config's CA
-    # bundle and the serving cert never drift (drift = "x509: certificate signed by
-    # unknown authority" on the collector webhook).
-    recreate: true
+  autoGenerateCert:
+    enabled: false
