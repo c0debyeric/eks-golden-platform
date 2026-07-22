@@ -102,8 +102,11 @@ replicas) are distinct mechanisms**:
 - **Read replicas** (`replicate_source_db`) — async, each with its own endpoint, pinned to
   us-east-1b / us-east-1c. Solve read scaling. Manual promotion for DR.
 - **Security**: RDS SG allows `:5432` from the EKS **node** SG only (not the whole VPC CIDR).
-- **Credentials**: `manage_master_user_password = true` → RDS-managed Secrets Manager secret
-  (`rds_master_secret_arn` output); no plaintext in state/tfvars. Apps consume via ESO.
+- **Credentials**: self-managed master password in a Secrets Manager secret we own
+  (`rds_master_secret_arn` output, `${name}/rds-master`, standard RDS JSON shape). NOT
+  RDS-managed (`manage_master_user_password`) because AWS blocks read-replica creation from
+  a Postgres source using RDS-managed credentials. Password is `password_wo` (write-only,
+  never in state). Apps consume the secret via External Secrets Operator.
 - **Cost gate**: `create_rds` defaults false. Set `create_rds = true` in `terraform.tfvars`
   for the ~4-instance topology (~$50/mo on db.t4g.micro).
 - **Prod flips**: set `deletion_protection = true` and `skip_final_snapshot = false` before
