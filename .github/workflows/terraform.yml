@@ -70,7 +70,25 @@ jobs:
             -backend-config="key=eks-golden-platform/terraform.tfstate" \
             -backend-config="region=${{ env.AWS_REGION }}"
       - name: terraform plan
-        # -lock=false: a read-only plan does not need to WRITE state, so it must not
-        # acquire the S3 state lock. Without this, a plan on every push races (and blocks)
-        # any concurrent `terraform apply` with a 412 PreconditionFailed lock error.
-        run: terraform -chdir=terraform plan -input=false -no-color -lock=false
+        # Plan scope: the AWS INFRASTRUCTURE layer only (VPC, EKS, Karpenter, IAM, RDS,
+        # storage). We deliberately -target these modules/resources and EXCLUDE the in-cluster
+        # resources (helm_release.argocd, kubectl_manifest.root_app) for two reasons:
+        #   1. Those are GitOps-managed — ArgoCD reconciles cluster state from Git, so Terraform
+        #      planning them in CI adds no review value.
+        #   2. The CI OIDC role can auth to the K8s API but AmazonEKSViewPolicy can't read
+        #      ArgoCD CRDs (applications.argoproj.io), so refreshing them fails; and CI lacks the
+        #      gitignored tfvars, so a full plan shows a spurious RDS teardown.
+        # -lock=false: a read-only plan must not acquire the S3 state lock (else it races/blocks
+        # any concurrent `terraform apply` with a 412 PreconditionFailed).
+        run: |
+          terraform -chdir=terraform plan -input=false -no-color -lock=false \
+            -target=module.vpc \
+            -target=module.eks \
+            -target=module.karpenter \
+            -target=aws_vpc_endpoint.s3 \
+            -target=aws_iam_role.external_secrets \
+            -target=aws_iam_role.alb_controller \
+            -target=aws_iam_role.ebs_csi \
+            -target=aws_iam_role.loki \
+            -target=aws_s3_bucket.loki
+
