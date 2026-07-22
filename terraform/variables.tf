@@ -102,6 +102,17 @@ variable "git_repo_url" {
   default     = "https://github.com/c0debyeric/eks-golden-platform.git"
 }
 
+variable "ci_role_arn" {
+  description = <<-EOT
+    IAM role ARN of the CI runner (GitHub Actions OIDC role). When set, the EKS module
+    grants it a read-only EKS access entry (AmazonEKSViewPolicy) so `terraform plan` in CI
+    can refresh in-cluster resources (helm_release, kubectl_manifest) instead of failing
+    with 'server has asked for the client to provide credentials'. Empty = no CI access entry.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Tags applied to all resources."
   type        = map(string)

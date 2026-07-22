@@ -12,6 +12,23 @@ module "eks" {
   endpoint_public_access                   = var.endpoint_public_access
   enable_cluster_creator_admin_permissions = true # Access Entries: add caller as admin
 
+  # Grant the CI runner (GitHub Actions OIDC role) a READ-ONLY access entry so `terraform plan`
+  # in CI can authenticate to the K8s API and refresh in-cluster resources (helm_release,
+  # kubectl_manifest). Without this, CI plan fails: "server has asked for the client to provide
+  # credentials". AmazonEKSViewPolicy is read-only — CI can plan but not mutate the cluster.
+  # Gated on var.ci_role_arn so a checkout without CI configured still applies cleanly.
+  access_entries = var.ci_role_arn == "" ? {} : {
+    ci = {
+      principal_arn = var.ci_role_arn
+      policy_associations = {
+        view = {
+          policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+          access_scope = { type = "cluster" }
+        }
+      }
+    }
+  }
+
   # KMS envelope encryption of Kubernetes secrets at rest.
   encryption_config = {
     resources = ["secrets"]
