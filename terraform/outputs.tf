@@ -50,9 +50,10 @@ output "rds_replica_endpoints" {
 
 output "rds_master_secret_arn" {
   description = <<-EOT
-    Secrets Manager ARN holding the RDS-managed master credentials (username/password).
-    Apps consume this via External Secrets Operator, never plaintext. Null unless create_rds.
+    Secrets Manager ARN holding the self-managed RDS master credentials (username/password/
+    host/port/dbname JSON). Apps consume this via External Secrets Operator, never plaintext.
+    Self-managed (not RDS-managed) because Postgres read replicas require it. Null unless create_rds.
   EOT
-  value       = var.create_rds ? module.rds_primary[0].db_instance_master_user_secret_arn : null
+  value       = var.create_rds ? aws_secretsmanager_secret.rds_master[0].arn : null
 }
 

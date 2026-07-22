@@ -51,7 +51,46 @@ resource "aws_vpc_security_group_ingress_rule" "rds_from_nodes" {
 # internet egress. (RDS doesn't initiate outbound connections in this design.)
 
 ########################################
-# Primary — Multi-AZ, credentials in Secrets Manager
+# Master credentials — self-managed secret (NOT RDS-managed)
+########################################
+# WHY not manage_master_user_password: RDS does NOT support creating read replicas from a
+# Postgres source whose credentials are RDS-managed in Secrets Manager (AWS docs; SQL Server
+# is the only exception). Since we need replicas, we manage the master password ourselves:
+# generate it, store it in a Secrets Manager secret we own, and pass it to the primary via
+# password_wo (write-only — never persisted in plan/state). Apps read the secret via ESO,
+# the same pattern as Grafana.
+resource "random_password" "rds_master" {
+  count = var.create_rds ? 1 : 0
+
+  length  = 32
+  special = false # avoid shell/URL-escaping headaches in connection strings
+}
+
+resource "aws_secretsmanager_secret" "rds_master" {
+  count = var.create_rds ? 1 : 0
+
+  name        = "${var.name}/rds-master"
+  description = "Master credentials for the ${var.name} RDS primary"
+  tags        = var.tags
+}
+
+resource "aws_secretsmanager_secret_version" "rds_master" {
+  count = var.create_rds ? 1 : 0
+
+  secret_id = aws_secretsmanager_secret.rds_master[0].id
+  # Standard RDS-style secret shape so ESO/apps can parse it uniformly.
+  secret_string = jsonencode({
+    username = "app_admin"
+    password = random_password.rds_master[0].result
+    engine   = "postgres"
+    port     = 5432
+    dbname   = "appdb"
+    host     = module.rds_primary[0].db_instance_address
+  })
+}
+
+########################################
+# Primary — Multi-AZ, self-managed master password (replica-compatible)
 ########################################
 module "rds_primary" {
   source  = "terraform-aws-modules/rds/aws"
@@ -78,9 +117,12 @@ module "rds_primary" {
   # HIGH AVAILABILITY: synchronous standby in a second AZ, auto-promoted on primary failure.
   multi_az = true
 
-  # RDS generates the master password and stores it in Secrets Manager — no plaintext in
-  # state or tfvars. Apps read it via External Secrets Operator, same pattern as Grafana.
-  manage_master_user_password = true
+  # Self-managed master password (see the random_password + secret above). password_wo is
+  # write-only: Terraform sends it to RDS but never stores it in state. NOT manage_master_user_password,
+  # because that would block read-replica creation for Postgres (AWS limitation).
+  manage_master_user_password = false
+  password_wo                 = random_password.rds_master[0].result
+  password_wo_version         = 1
 
   # Place into the ISOLATED database subnet tier (created by the VPC module, network.tf).
   db_subnet_group_name   = module.vpc.database_subnet_group_name
