@@ -2,7 +2,7 @@
 # `make up`   provisions the platform + bootstraps ArgoCD (which syncs the rest from Git).
 # `make down` destroys everything (~$0); Terraform state (S3) and Loki chunks (S3) survive.
 #
-# Requires: terraform >= 1.9, awscli v2, kubectl, helm, and AWS creds in the environment.
+# Requires: terraform >= 1.15, awscli v2, kubectl, helm, and AWS creds in the environment.
 
 TF        := terraform
 TF_DIR    := terraform
@@ -61,3 +61,17 @@ argocd-password: ## Print the initial ArgoCD admin password
 .PHONY: argocd-ui
 argocd-ui: ## Port-forward the ArgoCD UI to https://localhost:8080
 	kubectl port-forward svc/argocd-server -n argocd 8080:443
+
+.PHONY: rds-info
+rds-info: ## Show RDS endpoints + master-secret ARN (only if create_rds=true)
+	@cd $(TF_DIR) && $(TF) output rds_primary_endpoint 2>/dev/null && \
+		$(TF) output rds_replica_endpoints 2>/dev/null && \
+		$(TF) output rds_master_secret_arn 2>/dev/null || \
+		echo "No RDS outputs — set create_rds=true in terraform.tfvars and 'make up'."
+
+.PHONY: db-password
+db-password: ## Print the RDS master password from Secrets Manager
+	@aws secretsmanager get-secret-value --region $(REGION) \
+		--secret-id eks-golden/rds-master \
+		--query SecretString --output text | \
+		python3 -c "import sys,json; print(json.load(sys.stdin)['password'])"
