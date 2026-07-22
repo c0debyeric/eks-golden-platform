@@ -157,6 +157,12 @@ module "rds_primary" {
 # READ SCALING: async replicas of the primary. Each has its own connection endpoint; point
 # read-heavy queries here. replicate_source_db wires the replication link; a replica must NOT
 # manage its own master password (it inherits the source's) and cannot be Multi-AZ here.
+#
+# APPLY NOTE: creating a replica briefly puts the SOURCE into a non-"available" state, so when
+# Terraform creates both replicas in parallel (default), the second can fail with
+# "InvalidDBInstanceState: DB instance is not in the available state". This is transient — just
+# re-run `terraform apply` (idempotent; the first replica is already in state), or apply with
+# `-parallelism=1` on a fresh build to force the replicas to serialize.
 module "rds_replica" {
   source  = "terraform-aws-modules/rds/aws"
   version = ">= 7.0"
@@ -178,9 +184,12 @@ module "rds_replica" {
 
   # A replica inherits storage from its source; it does NOT create its own subnet group
   # (it lives in the source's subnet group) and does NOT manage a master password.
+  # max_allocated_storage=0 disables independent storage autoscaling on the replica — it
+  # follows the source's storage, and RDS reports 0 here, so setting it keeps plan idempotent.
   create_db_subnet_group      = false
   manage_master_user_password = false
   multi_az                    = false
+  max_allocated_storage       = 0
 
   vpc_security_group_ids = [aws_security_group.rds[0].id]
 
