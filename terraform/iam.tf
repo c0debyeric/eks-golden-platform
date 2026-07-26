@@ -145,3 +145,45 @@ resource "aws_eks_pod_identity_association" "loki" {
   service_account = "loki"
   role_arn        = aws_iam_role.loki.arn
 }
+
+########################################
+# Tempo -> S3 (traces bucket) via Pod Identity
+########################################
+# WHY: Tempo runs in monolithic mode backed by S3 (gitops/apps/tempo/values.yaml) and
+# authenticates to S3 via its service account's identity — NO static keys. Same pattern as
+# Loki: the tempo SA has no AWS credentials unless we associate it, so without this Tempo's
+# ingester/compactor fail every S3 PutObject/GetObject and the app never reaches Healthy.
+# Scope: only the single project traces bucket, only the object + bucket-list actions Tempo
+# needs (least-privilege, not s3:*).
+resource "aws_iam_role" "tempo" {
+  name               = "${var.name}-tempo"
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_assume.json
+  tags               = var.tags
+}
+
+data "aws_iam_policy_document" "tempo_s3" {
+  # Bucket-level: Tempo lists objects to discover trace blocks + the index.
+  statement {
+    actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
+    resources = ["arn:aws:s3:::${var.name}-tempo-traces"]
+  }
+  # Object-level: read/write/delete trace blocks within the bucket (compactor deletes on
+  # retention expiry, so DeleteObject is required — same as Loki).
+  statement {
+    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    resources = ["arn:aws:s3:::${var.name}-tempo-traces/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "tempo_s3" {
+  name   = "tempo-s3-access"
+  role   = aws_iam_role.tempo.id
+  policy = data.aws_iam_policy_document.tempo_s3.json
+}
+
+resource "aws_eks_pod_identity_association" "tempo" {
+  cluster_name    = module.eks.cluster_name
+  namespace       = "tracing"
+  service_account = "tempo"
+  role_arn        = aws_iam_role.tempo.arn
+}

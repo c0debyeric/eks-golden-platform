@@ -4,7 +4,7 @@ Production-grade Amazon EKS platform built to the 2026 golden standard, delivere
 Infrastructure-as-Code and GitOps — with a documented cheap teardown/spin-up lifecycle so it costs
 ~$0 when idle.
 
-**Stack:** EKS · Helm · ArgoCD · Prometheus · Grafana · Loki · OpenTelemetry · Karpenter · RDS PostgreSQL
+**Stack:** EKS · Helm · ArgoCD · Prometheus · Grafana · Loki · Tempo · OpenTelemetry · Karpenter · RDS PostgreSQL
 
 ![Architecture](docs/architecture.svg)
 
@@ -21,7 +21,8 @@ Infrastructure-as-Code and GitOps — with a documented cheap teardown/spin-up l
    Balancer Controller, External Secrets Operator, and the full observability stack — using
    pinned upstream Helm charts and sync-wave ordering.
 3. Tear the cluster down with `make down` and the platform disappears (~$0). `make up` rebuilds it
-   and ArgoCD restores the whole stack from Git. State (S3) and logs (Loki→S3) survive.
+   and ArgoCD restores the whole stack from Git. State (S3) and telemetry data (Loki logs + Tempo
+   traces → S3) survive.
 
 Design rationale and every version/decision is documented in [`docs/research/`](docs/research/RESEARCH.md).
 
@@ -38,8 +39,8 @@ eks-golden-platform/
 │   ├── network.tf              # VPC + 3-tier subnets (public/private/database) + NAT + S3 endpoint
 │   ├── cluster.tf              # EKS control plane + managed add-ons + bootstrap node group + CI access entry
 │   ├── compute.tf              # Karpenter AWS side (node IAM role, SQS interruption queue)
-│   ├── iam.tf                  # Pod Identity roles (ALB ctrl, External Secrets, EBS CSI, Loki)
-│   ├── storage.tf              # Loki S3 buckets (chunks + ruler)
+│   ├── iam.tf                  # Pod Identity roles (ALB ctrl, External Secrets, EBS CSI, Loki, Tempo)
+│   ├── storage.tf              # Loki S3 buckets (chunks + ruler) + Tempo traces bucket
 │   ├── rds.tf                  # PostgreSQL 18.4 — Multi-AZ primary + 2 read replicas (gated)
 │   ├── argocd.tf               # ArgoCD bootstrap + root app-of-apps (the handoff)
 │   ├── providers.tf            # aws/helm/kubernetes/kubectl (token exec, no kubeconfig)
@@ -73,6 +74,7 @@ eks-golden-platform/
 | Secrets | External Secrets Op + Pod Identity | **public-repo-safe** — only pointers in Git |
 | Metrics | kube-prometheus-stack 87.x | Operator + Prometheus + Grafana + Alertmanager |
 | Logs | Loki 3.x SingleBinary → S3 | cheap; logs survive teardown; native OTLP ingest |
+| Traces | Tempo monolithic → S3 | object-storage-native distributed tracing; traces survive teardown; OTLP ingest |
 | Telemetry | OpenTelemetry Operator + Collector | unified metrics+logs+traces pipeline |
 | Data | RDS PostgreSQL 18.4, **Multi-AZ + 2 read replicas** | HA standby (failover) + read scaling; isolated NAT-less DB tier |
 | Network | 3-tier subnets (public/private/**database**) | database tier has no egress route — defense in depth |
@@ -90,7 +92,8 @@ messaging-app legibility.)*
 - **One-time bootstrap** (`terraform/bootstrap/`, run once with local state): creates the **S3 state
   bucket** and the **GitHub OIDC role** for CI. State locking is **S3-native**
   (`use_lockfile = true`, Terraform >= 1.11) — **no DynamoDB table**.
-- Loki's two S3 buckets (chunks + ruler) are created by `terraform/storage.tf` — no manual step.
+- Loki's two S3 buckets (chunks + ruler) and Tempo's traces bucket are created by
+  `terraform/storage.tf` — no manual step.
 - A secret in AWS Secrets Manager at `eks-golden/grafana` with keys `admin-user`, `admin-password`
   (resolved into the cluster by External Secrets Operator).
 - **Optional RDS** (`create_rds = true`): a self-managed master password is generated and stored in

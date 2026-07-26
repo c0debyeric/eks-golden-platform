@@ -90,5 +90,7 @@ jobs:
             -target=aws_iam_role.alb_controller \
             -target=aws_iam_role.ebs_csi \
             -target=aws_iam_role.loki \
-            -target=aws_s3_bucket.loki
+            -target=aws_s3_bucket.loki \
+            -target=aws_iam_role.tempo \
+            -target=aws_s3_bucket.tempo
 

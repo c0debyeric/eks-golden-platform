@@ -36,3 +36,35 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "loki" {
     }
   }
 }
+
+########################################
+# Tempo trace storage (single object-storage bucket)
+########################################
+# WHY a dedicated bucket: Tempo (like Loki) is object-storage-native — traces (blocks + WAL
+# flushes) live in S3 so they survive `make down`/`make up`, and the trace tier stays isolated
+# from Loki's log chunks for independent lifecycle/retention and least-priv IAM scoping.
+# Tempo needs only ONE bucket (vs Loki's chunks+ruler split), so a plain resource is clearer
+# than a for_each here.
+resource "aws_s3_bucket" "tempo" {
+  bucket = "${var.name}-tempo-traces"
+  tags   = var.tags
+}
+
+# Block ALL public access: traces can carry request paths, headers, and IDs that are sensitive.
+resource "aws_s3_bucket_public_access_block" "tempo" {
+  bucket                  = aws_s3_bucket.tempo.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+# SSE-KMS at rest (auditable via KMS CloudTrail), matching the Loki bucket posture.
+resource "aws_s3_bucket_server_side_encryption_configuration" "tempo" {
+  bucket = aws_s3_bucket.tempo.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "aws:kms"
+    }
+  }
+}

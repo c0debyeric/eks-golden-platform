@@ -35,6 +35,11 @@ output "external_secrets_role_arn" {
   value       = aws_iam_role.external_secrets.arn
 }
 
+output "tempo_traces_bucket" {
+  description = "S3 bucket backing Tempo trace storage (persists across make down/up)."
+  value       = aws_s3_bucket.tempo.id
+}
+
 ########################################
 # RDS (only populated when var.create_rds = true)
 ########################################

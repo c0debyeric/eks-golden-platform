@@ -1,0 +1,32 @@
+# tempo — synced by the root app-of-apps. Sync wave 2 (peer of loki/kube-prometheus-stack:
+# needs the gp3 StorageClass from wave -1 and its Pod Identity association, both of which exist
+# well before this). Monolithic mode, S3 trace storage.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tempo
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  # Multi-source: pull the upstream chart, feed it our in-repo values.yaml via the $values ref
+  # (identical pattern to loki.yaml so the repo URL isn't duplicated inside the values path).
+  sources:
+    - repoURL: https://grafana.github.io/helm-charts
+      chart: tempo
+      targetRevision: 1.24.4
+      helm:
+        valueFiles:
+          - $values/gitops/apps/tempo/values.yaml
+    - repoURL: https://github.com/c0debyeric/eks-golden-platform.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: tracing
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]

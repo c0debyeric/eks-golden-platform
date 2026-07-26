@@ -1,6 +1,6 @@
 # OpenTelemetry Collector — gateway (Deployment) that receives OTLP from apps and fans out:
-#   metrics -> Prometheus (remote-write), logs -> Loki native OTLP endpoint (otlphttp).
-# Traces would go to Tempo (out of scope; the pipeline is stubbed but commented).
+#   metrics -> Prometheus (remote-write), logs -> Loki native OTLP endpoint (otlphttp),
+#   traces  -> Tempo (OTLP gRPC).
 apiVersion: opentelemetry.io/v1beta1
 kind: OpenTelemetryCollector
 metadata:
@@ -30,8 +30,12 @@ spec:
       # LOGS -> Loki native OTLP endpoint via otlphttp (the dedicated loki exporter is deprecated).
       otlphttp/loki:
         endpoint: http://loki-gateway.logging.svc.cluster.local/otlp
-      # TRACES -> Tempo (out of scope):
-      # otlp/tempo: { endpoint: tempo.tracing.svc:4317, tls: { insecure: true } }
+      # TRACES -> Tempo's OTLP gRPC receiver (monolithic Tempo, gitops/apps/tempo/). In-cluster
+      # traffic, so TLS is disabled; the service name follows the chart's fullname (tempo) in the
+      # tracing namespace.
+      otlp/tempo:
+        endpoint: tempo.tracing.svc.cluster.local:4317
+        tls: { insecure: true }
     service:
       pipelines:
         metrics:
@@ -42,7 +46,7 @@ spec:
           receivers: [otlp]
           processors: [memory_limiter, batch]
           exporters: [otlphttp/loki]
-        # traces:
-        #   receivers: [otlp]
-        #   processors: [memory_limiter, batch]
-        #   exporters: [otlp/tempo]
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [otlp/tempo]

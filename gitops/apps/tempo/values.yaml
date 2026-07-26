@@ -1,0 +1,56 @@
+# Tempo values — monolithic (single-binary) mode, S3-backed traces.
+# Cheapest mode for a portfolio cluster and the trace analog of Loki's SingleBinary: one Tempo
+# process, minimal footprint. S3 storage means traces survive `make down`/`make up`, and auth to
+# S3 is via Pod Identity (the tempo SA is associated with an IAM role in terraform/iam.tf) — NO
+# static keys. See docs/research/03-observability.md §6.
+
+tempo:
+  # 72h block retention — traces are high-volume/low-value-over-time; keep them shorter than the
+  # 7d log/metric retention to hold down S3 cost. Bump if you need longer trace lookback.
+  retention: 72h
+
+  # Object storage backend. The AWS SDK inside Tempo resolves credentials from the Pod Identity
+  # association (terraform/iam.tf) — no access_key/secret_key here, nothing sensitive in Git.
+  storage:
+    trace:
+      backend: s3
+      s3:
+        bucket: eks-golden-tempo-traces
+        endpoint: s3.us-east-1.amazonaws.com   # regional endpoint; region derived from it
+      # WAL stays on the pod's local disk (a gp3 PVC below); only flushed blocks go to S3.
+      wal:
+        path: /var/tempo/wal
+
+  # Only the OTLP receivers are needed — the OTel Collector gateway ships traces here over OTLP
+  # (gitops/apps/otel-collector/collector.yaml). Drop the chart's default Jaeger/OpenCensus/Zipkin
+  # receivers to shrink the attack surface and config.
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+
+  # Anonymous usage reporting off for a private portfolio cluster.
+  reportingEnabled: false
+
+# ServiceAccount that Tempo's S3 access binds to. Pod Identity targets this exact
+# namespace/name pair (tracing/tempo) — must match aws_eks_pod_identity_association.tempo.
+serviceAccount:
+  create: true
+  name: tempo
+
+# WAL needs durable local scratch between restarts; back it with the default gp3 StorageClass
+# (same as Loki/Prometheus) so the pod reschedules without losing un-flushed traces.
+persistence:
+  enabled: true
+  storageClassName: gp3
+  size: 10Gi
+
+# Single replica — monolithic mode for a lean portfolio stack.
+replicas: 1

@@ -1,8 +1,8 @@
-# 03 — Observability Stack (Prometheus, Grafana, Loki, OpenTelemetry)
+# 03 — Observability Stack (Prometheus, Grafana, Loki, Tempo, OpenTelemetry)
 
 > Golden-standard research for the observability layer: metrics (Prometheus), dashboards
-> (Grafana), logs (Loki), and the telemetry pipeline (OpenTelemetry). Everything here is deployed
-> as an ArgoCD Application → upstream Helm chart (doc 02). Platform is doc 01.
+> (Grafana), logs (Loki), traces (Tempo), and the telemetry pipeline (OpenTelemetry). Everything
+> here is deployed as an ArgoCD Application → upstream Helm chart (doc 02). Platform is doc 01.
 > Research date: 2026-07.
 
 ---
@@ -18,17 +18,17 @@
   | (DaemonSet +     |  logs (otlphttp -> /otlp/v1/logs) +--------------+
   |  Deployment)     | ------------------+                       |
   |                  |  traces           |                       |
-  +------------------+   (-> Tempo,      v                       |
-        ^  auto-instr        out of    +--------+                |
-        |  (Instrumentation  scope)    |  Loki  |                |
-        |   CRD)                        | (S3)   |                |
-     app pods                          +--------+                |
-                                            |                    |
-                                            v                    v
+  +------------------+   (otlp -> Tempo, v                       |
+        ^  auto-instr        -> S3)   +--------+                |
+        |  (Instrumentation           |  Loki  |   +--------+   |
+        |   CRD)                       | (S3)   |   | Tempo  |   |
+     app pods                          +--------+   | (S3)   |   |
+                                            |       +--------+   |
+                                            v           |        v
                                         +--------------------------+
                                         |         Grafana          |
                                         |  datasources: Prometheus |
-                                        |  + Loki (+ Tempo later)  |
+                                        |  + Loki + Tempo          |
                                         +--------------------------+
 ```
 
@@ -238,13 +238,15 @@ spec:
       # LOGS -> Loki native OTLP endpoint (otlphttp; the loki exporter is deprecated)
       otlphttp/loki:
         endpoint: http://loki-gateway.logging.svc.cluster.local/otlp
-      # TRACES -> Tempo (OUT OF SCOPE here; this is where they'd go)
-      # otlp/tempo: { endpoint: tempo.tracing.svc:4317 }
+      # TRACES -> Tempo's OTLP gRPC receiver (section 6)
+      otlp/tempo:
+        endpoint: tempo.tracing.svc.cluster.local:4317
+        tls: { insecure: true }
     service:
       pipelines:
         metrics: { receivers: [otlp], exporters: [prometheusremotewrite] }
         logs:    { receivers: [otlp], exporters: [otlphttp/loki] }
-        # traces: { receivers: [otlp], exporters: [otlp/tempo] }
+        traces:  { receivers: [otlp], exporters: [otlp/tempo] }
 ```
 
 Key 2026 correctness note: export logs to Loki with the **`otlphttp`** exporter pointed at Loki's
@@ -266,7 +268,77 @@ spec:
 
 ---
 
-## 5. Is Alloy replacing the OTel Collector? (2026 landscape)
+## 5. Tempo (distributed traces)
+
+- **Version:** Tempo 2.x. Object-storage-native tracing backend — needs only S3, no Cassandra/ES.
+- **Chart:** `grafana/tempo` (the **monolithic / single-binary** chart), pinned to **1.24.4**
+  from `https://grafana.github.io/helm-charts` (same repo Loki uses). NOTE: Grafana moved its
+  charts to `grafana-community/helm-charts` on 30 Jan 2026 (there `tempo` is 2.2.x); the legacy
+  URL still serves 1.24.4 and is kept here for consistency with the other apps. AVOID
+  `tempo-distributed` unless you actually need the microservices split.
+
+### Deployment mode (ranked for a cost-conscious cluster)
+
+```
+Rank  Mode                        Complexity  Cost   Use for
+1.    Monolithic (single-binary)  low         low    portfolio / small   <- THIS PROJECT
+2.    tempo-distributed           high        high   high-volume multi-tenant tracing
+```
+
+**Decision:** **monolithic** mode — one Tempo process, the trace analog of Loki SingleBinary.
+Perfect for a portfolio cluster; scale to `tempo-distributed` only under real trace volume.
+
+### Storage: S3 (traces survive teardown)
+
+Tempo writes trace blocks (+ WAL flushes) to a dedicated **S3 bucket** (`eks-golden-tempo-traces`,
+`terraform/storage.tf`). Auth is via **EKS Pod Identity** (`terraform/iam.tf` associates the
+`tracing/tempo` SA with a least-priv S3 role — ListBucket/GetBucketLocation + Get/Put/DeleteObject
+on the one bucket, NOT `s3:*`). S3 storage is why traces survive `make down`/`make up`, exactly
+like Loki logs. The WAL sits on a gp3 PVC so un-flushed traces survive a pod restart.
+
+```yaml
+# gitops/apps/tempo/values.yaml
+tempo:
+  retention: 72h                     # shorter than logs/metrics (7d) — traces are high-volume
+  storage:
+    trace:
+      backend: s3
+      s3: { bucket: eks-golden-tempo-traces, endpoint: s3.us-east-1.amazonaws.com }
+  receivers:
+    otlp: { protocols: { grpc: { endpoint: 0.0.0.0:4317 }, http: { endpoint: 0.0.0.0:4318 } } }
+serviceAccount: { create: true, name: tempo }   # Pod Identity targets tracing/tempo
+persistence: { enabled: true, storageClassName: gp3, size: 10Gi }   # WAL scratch
+```
+
+### How traces get INTO Tempo
+
+The OTel Collector gateway (section 4) exports traces over OTLP gRPC to
+`tempo.tracing.svc.cluster.local:4317`. Apps send OTLP to the collector (or get zero-code
+auto-instrumentation via the `Instrumentation` CRD); the collector fans traces to Tempo, metrics
+to Prometheus, and logs to Loki — one pipeline, three backends.
+
+### Grafana wiring (trace-to-logs correlation)
+
+Tempo is added as a Grafana datasource (`gitops/apps/kube-prometheus-stack/values.yaml`,
+`additionalDataSources`) pointed at `http://tempo.tracing.svc.cluster.local:3200`. With
+`tracesToLogsV2` set to the Loki datasource UID, you can click a span in Tempo and jump straight
+to the correlated Loki logs — the classic three-pillars single-pane workflow.
+
+### Sync ordering
+
+`tempo` is an ArgoCD Application at **sync-wave 2** (`gitops/bootstrap/tempo.yaml`), a peer of
+`loki`/`kube-prometheus-stack`: it needs the default gp3 StorageClass (wave -1) and its Pod
+Identity association (created by Terraform before the app-of-apps first syncs).
+
+### Sources
+
+- Tempo Helm deployment guide — https://oneuptime.com/blog/post/2026-01-17-helm-grafana-tempo-tracing-deployment/view
+- Grafana Helm charts repo move (30 Jan 2026) — https://iits-consulting.de/blog/grafana-helm-charts-moved-what-do
+- Tempo storage (S3) — https://grafana.com/docs/tempo/latest/configuration/#storage
+
+---
+
+## 6. Is Alloy replacing the OTel Collector? (2026 landscape)
 
 Short answer: **no — they coexist.** Clarification:
 - **Grafana Alloy** replaces **Promtail** (and Grafana Agent) as Grafana's own telemetry
@@ -295,3 +367,5 @@ Prometheus scrape only       OTel Collector -> Prometheus remote-write (+ scrape
 - OTel Operator for Kubernetes — https://opentelemetry.io/docs/platforms/kubernetes/operator/
 - OTel logs -> Loki via otlphttp — https://oneuptime.com/blog/post/2026-02-06-opentelemetry-logs-grafana-loki-collector/view
 - OTel Operator Helm chart (AWS blog) — https://aws.amazon.com/blogs/opensource/building-a-helm-chart-for-deploying-the-opentelemetry-operator
+- Tempo monolithic Helm deploy — https://oneuptime.com/blog/post/2026-01-17-helm-grafana-tempo-tracing-deployment/view
+- Grafana Helm charts repo move — https://iits-consulting.de/blog/grafana-helm-charts-moved-what-do

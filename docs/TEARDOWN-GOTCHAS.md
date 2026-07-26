@@ -87,3 +87,33 @@ aws ec2 describe-nat-gateways --profile sandbox --region us-east-1 \
 ```
 
 All four should return empty before you consider the account clean.
+
+## 4. Telemetry S3 buckets are RETAINED on teardown (by design)
+
+The Loki (`eks-golden-loki-chunks`, `eks-golden-loki-ruler`) and Tempo
+(`eks-golden-tempo-traces`) buckets deliberately have **no `force_destroy`**, so
+`terraform destroy` will **fail to delete them while they hold objects**:
+
+```
+Error: deleting S3 Bucket (eks-golden-tempo-traces): BucketNotEmpty:
+The bucket you tried to delete is not empty
+```
+
+This is intentional — logs and traces are meant to **survive `make down`/`make up`**
+(that's the whole point of S3 backing). `make down` tears down the cluster/VPC/NAT
+(the expensive parts) and leaves these near-$0 buckets behind so telemetry history
+persists across rebuilds.
+
+If you want a **full** clean-up (permanently discard telemetry history), empty and
+delete them explicitly AFTER `make down`:
+
+```bash
+P="--profile sandbox --region us-east-1"
+for b in eks-golden-loki-chunks eks-golden-loki-ruler eks-golden-tempo-traces; do
+  aws s3 rm "s3://$b" --recursive $P        # empty objects (+ versions if versioned)
+  aws s3api delete-bucket --bucket "$b" $P  # then remove the bucket
+done
+```
+
+Standing S3 storage cost for these is negligible (a few $/mo at portfolio log/trace
+volume), so the default is to keep them.

@@ -32,8 +32,20 @@ grafana:
   additionalDataSources:
     - name: Loki
       type: loki
+      uid: loki
       access: proxy
       url: http://loki-gateway.logging.svc.cluster.local
+    - name: Tempo
+      type: tempo
+      uid: tempo
+      access: proxy
+      url: http://tempo.tracing.svc.cluster.local:3200
+      # Trace-to-logs correlation: jump from a Tempo span to its Loki logs in one click.
+      jsonData:
+        tracesToLogsV2:
+          datasourceUid: loki
+          spanStartTimeShift: "-1h"
+          spanEndTimeShift: "1h"
   sidecar:
     dashboards:
       enabled: true          # auto-load ConfigMaps labeled grafana_dashboard=1
