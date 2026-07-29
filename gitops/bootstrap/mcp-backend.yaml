@@ -1,25 +1,94 @@
-# mcp-backend — the sample APPLICATION workload (source: application/backend),
-# plain manifests (Deployment + Service + PDB) under gitops/apps/mcp-backend.
-# Sync wave 5: after the observability stack (otel-operator wave 2, gateway
-# collector wave 3) so the OTLP endpoint exists by the time pods start.
+# ApplicationSet: one Argo CD Application per environment for the mcp-backend workload.
+#
+# WHY an ApplicationSet instead of three hand-written Application YAMLs: the three envs
+# differ in exactly four values (namespace, overlay path, syncPolicy, sync wave). Hand-
+# maintaining three near-identical 30-line manifests is how the syncOptions on one env
+# drift from the others — and a missing ServerSideApply or CreateNamespace only surfaces
+# at sync time as an opaque "one or more synchronization tasks are not valid".
+#
+# WHY the LIST generator and not the git-directory generator: a directory generator would
+# auto-discover overlays/* and silently create a full Application for any new directory.
+# For envs that is a footgun — an experimental overlay committed for local testing would
+# self-deploy to the cluster. The list is explicit: three envs, reviewed, no surprises.
+#
+# WHY app-of-apps is retained above this: this ApplicationSet is itself discovered by the
+# existing `root` Application (path gitops/bootstrap, recurse:true), so the bootstrap
+# contract is unchanged. ApplicationSets replace the repetitive per-env Application, not
+# the app-of-apps root.
+#
+# Docs: https://argo-cd.readthedocs.io/en/stable/operator-manual/applicationset/Generators-List/
 apiVersion: argoproj.io/v1alpha1
-kind: Application
+kind: ApplicationSet
 metadata:
   name: mcp-backend
   namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "5"
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
 spec:
-  project: default
-  source:
-    repoURL: https://github.com/c0debyeric/eks-golden-platform.git
-    path: gitops/apps/mcp-backend
-    targetRevision: main
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: application
-  syncPolicy:
-    automated: { prune: true, selfHeal: true }
-    syncOptions: [CreateNamespace=true, ServerSideApply=true]
+  # goTemplate gives real conditionals instead of the legacy {{param}} string
+  # substitution, which cannot express "prod syncs manually".
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"] # fail fast on a typo'd key rather than render ""
+
+  generators:
+    - list:
+        elements:
+          # Wave 5 matches the pre-split app: after otel-operator (2) and the gateway
+          # collector (3), so the OTLP endpoint exists before pods start. Envs then
+          # roll in order dev -> stage -> prod.
+          - env: dev
+            namespace: mcp-dev
+            wave: "5"
+          - env: stage
+            namespace: mcp-stage
+            wave: "6"
+          - env: prod
+            namespace: mcp-prod
+            wave: "7"
+
+  template:
+    metadata:
+      # Names become mcp-backend-dev / -stage / -prod.
+      name: mcp-backend-{{.env}}
+      annotations:
+        argocd.argoproj.io/sync-wave: "{{.wave}}"
+      finalizers:
+        # Ensures deleting the Application cascades to its workloads instead of orphaning
+        # them in the namespace.
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/c0debyeric/eks-golden-platform.git
+        # Each env points at its own kustomize overlay; the shared base is pulled in by
+        # the overlay's `resources:` so there is exactly one copy of the manifests.
+        path: gitops/apps/mcp-backend/overlays/{{.env}}
+        targetRevision: main
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "{{.namespace}}"
+      syncPolicy:
+        syncOptions:
+          - CreateNamespace=true # the mcp-* namespaces are created on first sync
+          # ServerSideApply avoids the 262144-byte client-side apply annotation cap. Not
+          # strictly required at this manifest size, but kept uniform with the platform
+          # apps so a future large CRD or config blob does not fail only in one env.
+          - ServerSideApply=true
+
+  # PROMOTION GATE, expressed as a template PATCH rather than an inline conditional.
+  #
+  # dev and stage get automated sync (prune + selfHeal). prod deliberately gets NO
+  # `automated` block: a merged promotion PR changes Git, then a human triggers the sync.
+  # WHY: auto-sync on prod makes `git merge` and `deploy to production` the same
+  # irreversible action, removing the last checkpoint before customer traffic moves.
+  # selfHeal off also means an emergency kubectl mitigation is not reverted out from
+  # under the operator mid-incident.
+  #
+  # templatePatch is applied after the template renders, so this stays valid YAML in Git
+  # and is reviewable — unlike a {{- if }} wrapped around a mapping key.
+  templatePatch: |
+    {{- if ne .env "prod" }}
+    spec:
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+    {{- end }}
