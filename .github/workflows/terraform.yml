@@ -139,6 +139,19 @@ jobs:
           set -euo pipefail
           python3 scripts/kustomize_overlay_gate.py gitops/apps/mcp-backend
 
+      # The NodePool allows arch In [amd64, arm64] for cheaper Graviton capacity and the
+      # Deployment sets no nodeSelector, so a pod can land on either. An amd64-only image
+      # on an arm64 node PULLS FINE and then dies with "exec format error" — which reads
+      # like a broken entrypoint, not an arch mismatch, and only reproduces when the
+      # scheduler happens to pick ARM. Hit live on an m9gd.medium node 2026-07-29. The two
+      # halves of this contract live in different files, so nothing links them but this.
+      - name: Build platforms cover every arch the NodePool can provision
+        run: |
+          set -euo pipefail
+          python3 scripts/build_arch_gate.py \
+            .github/workflows/build-image.yml \
+            gitops/apps/karpenter/nodepool.yaml
+
       # Catches invalidated values keys after a bump (a chart with values.schema.json rejects
       # unknown keys outright, which leaves the ArgoCD app stuck "Unknown" — it can't even render).
       #
