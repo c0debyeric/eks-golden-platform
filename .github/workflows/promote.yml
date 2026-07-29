@@ -1,0 +1,193 @@
+# Promote an already-built mcp-backend image from one environment to the next.
+#
+# WHY a separate workflow from build-image.yml: promotion must NEVER rebuild. A rebuild
+# produces a different image for the same source, so what you validated in dev is not
+# what reaches prod -- the entire point of a promotion pipeline is that the artifact is
+# byte-identical across envs. This workflow therefore only ever COPIES an existing image
+# reference from one overlay to the next; it has no docker build step at all.
+#
+# WHY promote by DIGEST and not by tag: ECR tags are immutable in this repo, but a digest
+# is immutable by construction and survives even a repo-policy change. The digest is also
+# the only reference that proves the promoted bytes are the bytes that were tested.
+#
+# WHY a pull request instead of a direct push: Git stays the single source of truth and
+# the PR is the audit trail + the human gate. prod's Argo CD Application has no
+# `automated` block, so merging this PR changes desired state and a human then triggers
+# the sync -- merge and deploy stay two distinct decisions.
+#
+# WHY long-lived per-env BRANCHES are not used: they are a widely documented GitOps
+# anti-pattern -- env branches diverge, cherry-picks drift, and `git diff dev prod` stops
+# being meaningful. Environments are DIRECTORIES (overlays/<env>) on one branch.
+# See: https://codefresh.io/blog/stop-using-branches-deploying-different-gitops-environments/
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "Source environment to promote FROM"
+        required: true
+        type: choice
+        options: [dev, stage]
+      to:
+        description: "Target environment to promote TO"
+        required: true
+        type: choice
+        options: [stage, prod]
+
+# Least privilege: this job reads the repo, writes a branch + opens a PR, and mints an
+# OIDC token to read the ECR digest. It does NOT need packages: write -- nothing is built.
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: mcp-backend
+  APP_DIR: gitops/apps/mcp-backend
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      # Guard the dispatch inputs. workflow_dispatch choices cannot express a RELATION
+      # between two inputs, so dev->prod (skipping stage) is selectable in the UI and has
+      # to be rejected here. Promotion must be strictly one hop along dev -> stage -> prod.
+      - name: Validate the promotion hop
+        run: |
+          set -euo pipefail
+          FROM='${{ inputs.from }}'
+          TO='${{ inputs.to }}'
+          if [ "$FROM" = "dev" ] && [ "$TO" = "stage" ]; then
+            echo "Promoting dev -> stage"
+          elif [ "$FROM" = "stage" ] && [ "$TO" = "prod" ]; then
+            echo "Promoting stage -> prod"
+          else
+            echo "::error::Invalid hop '$FROM' -> '$TO'. Allowed: dev->stage, stage->prod." \
+              "Skipping an environment defeats the purpose of the gate."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-promote-${{ github.run_id }}
+
+      # Read the source overlay's current image reference straight out of Git. Using the
+      # committed value (rather than "latest in ECR") is what makes promotion deterministic:
+      # you promote exactly what that environment is currently running.
+      - name: Read source environment's pinned image
+        id: src
+        run: |
+          set -euo pipefail
+          SRC_FILE="${APP_DIR}/overlays/${{ inputs.from }}/kustomization.yaml"
+          # yq is preinstalled on ubuntu-latest runners.
+          TAG=$(yq '.images[] | select(.name == "PLACEHOLDER_IMAGE") | .newTag' "$SRC_FILE")
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "::error::Could not read newTag from $SRC_FILE"; exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Source ${{ inputs.from }} is pinned to tag: $TAG"
+
+      # Resolve tag -> digest and verify the image really exists in ECR before promoting.
+      # WHY: a hand-edited overlay can reference a tag that was never pushed. Catching it
+      # here fails the workflow instead of producing a PR that deploys ImagePullBackOff.
+      - name: Resolve digest and assert the image exists
+        id: digest
+        run: |
+          set -euo pipefail
+          TAG='${{ steps.src.outputs.tag }}'
+          DIGEST=$(aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="$TAG" \
+            --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "None" ]; then
+            echo "::error::Tag '$TAG' does not exist in ECR repo '$ECR_REPOSITORY'." \
+              "Refusing to promote an image that was never pushed."
+            exit 1
+          fi
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Resolved $TAG -> $DIGEST"
+
+          # Surface the vulnerability scan result. scanOnPush is enabled on the repo, so a
+          # findings summary should exist; it is reported, not enforced, because failing a
+          # promotion on a base-image CVE with no fix available blocks all delivery.
+          aws ecr describe-image-scan-findings \
+            --repository-name "$ECR_REPOSITORY" --image-id imageTag="$TAG" \
+            --query 'imageScanFindings.findingSeverityCounts' --output json 2>/dev/null \
+            || echo "(no scan findings available yet)"
+
+      # Rewrite ONLY the target overlay's image pin. Nothing else in the tree is touched,
+      # so the PR diff is one or two lines and is trivially reviewable.
+      - name: Pin target environment to the promoted digest
+        run: |
+          set -euo pipefail
+          DST_FILE="${APP_DIR}/overlays/${{ inputs.to }}/kustomization.yaml"
+          # Promote by digest: set newTag for human traceability AND `digest`, which is
+          # what actually resolves the pull. kustomize renders both as
+          # repo:tag@sha256:... so the tag stays readable while the digest is
+          # authoritative.
+          #
+          # NOTE the field is `digest`, NOT `newDigest`. kustomize rejects newDigest with
+          # `invalid Kustomization: json: unknown field "newDigest"` -- verified by
+          # rendering, because that error would otherwise only appear once a promotion PR
+          # was already open and every promotion would fail at render time.
+          TAG='${{ steps.src.outputs.tag }}' \
+          DIGEST='${{ steps.digest.outputs.digest }}' \
+          yq -i '(.images[] | select(.name == "PLACEHOLDER_IMAGE"))
+                   |= (.newTag = strenv(TAG) | .digest = strenv(DIGEST))' "$DST_FILE"
+          echo "--- resulting images: block ---"
+          yq '.images' "$DST_FILE"
+
+      # Prove the edit renders before asking a human to review it. This is the same gate
+      # CI runs on the PR, run here so a broken promotion never even opens a PR.
+      - name: Verify the target overlay still renders
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml
+          kubectl kustomize "${APP_DIR}/overlays/${{ inputs.to }}" > /tmp/rendered.yaml
+          grep -q "${{ steps.digest.outputs.digest }}" /tmp/rendered.yaml \
+            || { echo "::error::Digest not present in rendered output"; exit 1; }
+          python3 scripts/kustomize_overlay_gate.py "$APP_DIR"
+
+      - name: Open promotion pull request
+        # v8 is current. Pinned to the floating major to match the convention used across
+        # terraform.yml and build-image.yml.
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: promote/${{ inputs.from }}-to-${{ inputs.to }}-${{ github.run_id }}
+          # Delete the branch after merge so promotion branches don't accumulate. They are
+          # ephemeral by design -- the durable record is the merged commit on main.
+          delete-branch: true
+          title: "promote(${{ inputs.to }}): ${{ steps.src.outputs.tag }} from ${{ inputs.from }}"
+          commit-message: |
+            promote(${{ inputs.to }}): pin ${{ steps.src.outputs.tag }} promoted from ${{ inputs.from }}
+
+            Promotes the EXACT image currently running in ${{ inputs.from }} to
+            ${{ inputs.to }} by digest -- no rebuild, so the artifact is byte-identical
+            to the one already validated.
+
+            tag:    ${{ steps.src.outputs.tag }}
+            digest: ${{ steps.digest.outputs.digest }}
+          body: |
+            ## Promotion: `${{ inputs.from }}` → `${{ inputs.to }}`
+
+            | | |
+            |---|---|
+            | Source env | `${{ inputs.from }}` |
+            | Target env | `${{ inputs.to }}` |
+            | Image tag | `${{ steps.src.outputs.tag }}` |
+            | Digest | `${{ steps.digest.outputs.digest }}` |
+
+            **No rebuild.** This PR moves an existing ECR image reference, so the bytes
+            reaching `${{ inputs.to }}` are byte-identical to what `${{ inputs.from }}`
+            has been running. Verified the digest resolves in ECR and that the target
+            overlay still renders with the gate before this PR was opened.
+
+            <!-- The prod Application has no `automated` syncPolicy, so merging changes
+                 DESIRED state only. A human still triggers the Argo CD sync. -->

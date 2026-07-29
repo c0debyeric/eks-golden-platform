@@ -16,9 +16,13 @@ on:
       - ".github/workflows/build-image.yml"
   workflow_dispatch: {}
 
-# Required for OIDC (id-token) + checkout (contents).
+# Required for OIDC (id-token), checkout (contents), and the automated dev-pin PR.
+# contents: write + pull-requests: write are needed by create-pull-request to push the
+# deploy/dev-* branch and open the PR. Still no packages: write -- the image goes to ECR
+# via OIDC, not to GHCR.
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
   id-token: write
 
 env:
@@ -92,6 +96,56 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Seed the DEV overlay with what was just built. This is the write-back step whose
+      # absence was the real defect: previously the workflow pushed an image and then asked
+      # a HUMAN to hand-edit deployment.yaml, so nothing consumed the build and the
+      # committed placeholder (REPLACE_WITH_GIT_SHA) stayed live -- leaving mcp-backend
+      # Degraded on InvalidImageName indefinitely.
+      #
+      # WHY only dev, never stage/prod: a push to main must not be able to change
+      # production. Moving further along the chain is the promote.yml workflow's job, which
+      # requires an explicit dispatch and opens a reviewable PR. Build auto-delivers to dev
+      # and stops there.
+      #
+      # WHY a PR rather than a direct push to main: a direct push from a workflow either
+      # needs branch-protection bypass or silently fails on a protected main. A PR is also
+      # the audit record of which build produced which dev deploy.
+      - name: Pin dev overlay to the new image
+        if: steps.exists.outputs.found == 'false'
+        run: |
+          set -euo pipefail
+          DST=gitops/apps/mcp-backend/overlays/dev/kustomization.yaml
+          # `digest` (not `newDigest` -- kustomize rejects that field) is authoritative;
+          # newTag is kept alongside it for human readability in the rendered image ref.
+          TAG="${GITHUB_SHA::12}" \
+          DIGEST='${{ steps.build.outputs.digest }}' \
+          yq -i '(.images[] | select(.name == "PLACEHOLDER_IMAGE"))
+                   |= (.newTag = strenv(TAG) | .digest = strenv(DIGEST))' "$DST"
+          kubectl kustomize gitops/apps/mcp-backend/overlays/dev >/dev/null
+          python3 scripts/kustomize_overlay_gate.py gitops/apps/mcp-backend
+
+      - name: Open dev pin pull request
+        if: steps.exists.outputs.found == 'false'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: deploy/dev-${{ github.sha }}
+          delete-branch: true
+          title: "deploy(dev): ${{ github.sha }}"
+          commit-message: |
+            deploy(dev): pin mcp-backend to ${{ github.sha }}
+
+            Automated write-back from build-image.yml. Promotion to stage/prod is a
+            separate, explicitly dispatched decision (see .github/workflows/promote.yml).
+          body: |
+            Automated dev pin from `build-image.yml`.
+
+            | | |
+            |---|---|
+            | Tag | `${{ github.sha }}` |
+            | Digest | `${{ steps.build.outputs.digest }}` |
+
+            Promote onward with the **promote** workflow (`dev → stage`, then `stage → prod`).
+
       - name: Job summary
         run: |
           {
@@ -100,5 +154,6 @@ jobs:
             echo "- Image: \`${{ steps.meta.outputs.tag }}\`"
             echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
             echo ""
-            echo "Set this as the \`image:\` in \`gitops/apps/mcp-backend/deployment.yaml\` (or pin by digest), then ArgoCD rolls it out."
+            echo "A PR pinning the **dev** overlay to this image was opened automatically."
+            echo "Promote onward with the \`promote\` workflow (dev → stage → prod)."
           } >> "$GITHUB_STEP_SUMMARY"
