@@ -21,7 +21,10 @@ spec:
   source:
     repoURL: https://charts.jetstack.io
     chart: cert-manager
-    targetRevision: v1.16.2
+    # v1.16.2 was long past EOL (the 1.19 line EOL'd 2026-07-08, so 1.16 far earlier).
+    # cert-manager supports only N and N-1 (~8 months), so a stale pin here means an
+    # unpatched webhook/CA controller sitting in the trust path of every cert we issue.
+    targetRevision: v1.21.0
     helm:
       valuesObject:
         # installCRDs is deprecated in favor of crds.enabled; set the current key so
