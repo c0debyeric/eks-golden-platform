@@ -13,7 +13,16 @@ spec:
   sources:
     - repoURL: https://aws.github.io/eks-charts
       chart: aws-load-balancer-controller
-      targetRevision: 1.9.2
+      # 1.9.2 -> 3.4.3. NOT a 2-major jump in the controller: upstream REALIGNED the chart
+      # version with the controller version at v3.0.0 (previously controller v2.17 shipped as
+      # chart v1.17), so chart 3.4.3 == controller v3.4.3. Reading this as "chart 1.x -> 3.x"
+      # overstates the change.
+      #
+      # Verified against the rendered output: our Pod-Identity-critical flags still render
+      # (--aws-region, --aws-vpc-id -- without these the controller tries IMDS, CrashLoops, and
+      # its Service mutating webhook then blocks EVERY Service create cluster-wide), and the
+      # chart introduces no hard Gateway API CRD dependency, so nothing new must be pre-installed.
+      targetRevision: 3.4.3
       helm:
         valueFiles:
           - $values/gitops/apps/alb-controller/values.yaml
