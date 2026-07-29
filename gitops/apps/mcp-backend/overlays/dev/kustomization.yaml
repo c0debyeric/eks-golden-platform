@@ -7,14 +7,11 @@
 # and recycle aggressively, so the PDB is deleted rather than tuned.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-
 # Every object from the base lands here. This is the ONLY place the env namespace is
 # declared, so a copy/paste error produces a wrong-namespace deploy, not a cross-env one.
 namespace: mcp-dev
-
 resources:
   - ../../base
-
 # Distinguishes this env's objects in dashboards and `kubectl get -l` without renaming
 # the workload (name stays mcp-backend so the Service DNS is stable per namespace).
 labels:
@@ -22,7 +19,6 @@ labels:
     pairs:
       app.kubernetes.io/instance: mcp-backend-dev
       environment: dev
-
 # Promotion target. The CI write-back step rewrites newTag here ONLY.
 #
 # WHY pinned by DIGEST, not tag: ECR tags are immutable in this repo, but a digest is
@@ -32,12 +28,11 @@ labels:
 images:
   - name: PLACEHOLDER_IMAGE
     newName: 810749429738.dkr.ecr.us-east-1.amazonaws.com/mcp-backend
-    newTag: dev-bootstrap
-
+    newTag: f2d77b11de0e
+    digest: sha256:42e4de8e8c7c8c07bb77f9a729b2e99e141465b966c806b34e7769f221446065
 replicas:
   - name: mcp-backend
     count: 1
-
 # Drop the PDB (see header): single replica + minAvailable:1 deadlocks node drains.
 patches:
   - target:
@@ -49,7 +44,6 @@ patches:
       kind: PodDisruptionBudget
       metadata:
         name: mcp-backend
-
   # Env-specific telemetry identity. Without this, dev spans are tagged as production
   # and pollute prod dashboards/alerting.
   #
