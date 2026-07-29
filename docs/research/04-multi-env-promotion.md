@@ -505,11 +505,107 @@ no `automated` block, so it will not deploy until a promotion PR is merged and a
 
 ### Remaining work
 
-1. **First real promotion run** (`dev -> stage`) — logic is verified against a copy of the
-   overlay tree and against live ECR digest resolution, but the workflow has not yet run
-   end-to-end in GitHub Actions.
+1. ~~First real promotion run (`dev -> stage`)~~ — **DONE**, see §10. Required two repo
+   setting changes documented in §9.
 2. **Ephemeral `kind` cluster in CI** for chart-bump validation — the honest fix for §7.1.
 3. **One-click prod release job** so the manual gate does not require the ArgoCD UI.
 4. **Per-env AppProject** with destination restrictions instead of shared `default`.
 5. **NetworkPolicy** between the three app namespaces.
 6. Reconcile docs 01–03, which still describe the single-environment topology.
+
+---
+
+## 9. Repository settings the promotion pattern REQUIRES
+
+Neither of these is code, both block promotion completely, and both fail with messages that
+sound like a workflow bug. Recorded because the first live run of `promote.yml` hit both.
+
+### 9.1 Allow Actions to create pull requests
+
+The promotion workflow's final step failed with:
+
+```
+GitHub Actions is not permitted to create or approve pull requests.
+```
+
+Every prior step had succeeded — the digest was resolved, the overlay rewritten, the gate
+passed, the branch pushed. Only PR creation was refused. The repo default was:
+
+```json
+{ "default_workflow_permissions": "read", "can_approve_pull_request_reviews": false }
+```
+
+Fix (also settable in Settings -> Actions -> General -> Workflow permissions):
+
+```bash
+gh api -X PUT repos/<owner>/<repo>/actions/permissions/workflow \
+  -f default_workflow_permissions=read \
+  -F can_approve_pull_request_reviews=true
+```
+
+`default_workflow_permissions` is deliberately left at **read**. Both workflows declare their
+own `permissions:` block explicitly, so widening the repo-wide default would grant write to
+every workflow for no benefit.
+
+### 9.2 Approve workflows on Actions-authored PRs
+
+CI on the promotion PR sat at `action_required` with only GitGuardian reporting. GitHub does
+not auto-run workflows on PRs opened by Actions — the run is created but held:
+
+```
+completed  action_required  terraform  pull_request  30460481683  0s
+```
+
+This is a deliberate GitHub anti-abuse control, not a misconfiguration, and it means **a
+promotion PR needs one click before its own gates run**. Approve with:
+
+```bash
+gh api -X POST repos/<owner>/<repo>/actions/runs/<run-id>/approve
+```
+
+Once approved, `lint` and `gitops-contract` (including both new overlay gates) ran and passed
+normally. This friction is arguably a feature for a *prod* promotion; for `dev -> stage` it is
+pure noise, and it is the strongest practical argument for Kargo (§5) if promotion frequency
+ever rises — Kargo promotes from inside the cluster and does not depend on Actions being
+allowed to author PRs.
+
+---
+
+## 10. First live promotion: verified end to end
+
+`dev -> stage`, run 30460437938, PR #22, merged 2026-07-29.
+
+```
+Source dev is pinned to tag: a7b96ed603df
+Resolved a7b96ed603df -> sha256:feeeae5e3c0764a2d79f34bbac1150c568a0f0e93c102f01d341b2631bd75761
+--- resulting images: block ---
+  newTag: a7b96ed603df
+  digest: sha256:feeeae5e...
+PASS: overlay 'dev'   -> namespace 'mcp-dev'
+PASS: overlay 'stage' -> namespace 'mcp-stage'
+PASS: overlay 'prod'  -> namespace 'mcp-prod'
+```
+
+Post-merge cluster state:
+
+| Application | Sync | Health | Replicas | Notes |
+|---|---|---|---|---|
+| `mcp-backend-dev` | Synced | Healthy | 1/1 | `/readyz` -> HTTP 200 |
+| `mcp-backend-stage` | Synced | Healthy | 2/2 | `/readyz` -> HTTP 200 |
+| `mcp-backend-prod` | OutOfSync | Missing | 0 | **correct** — manual gate, awaits promotion + human sync |
+
+**The property that matters**, checked directly against the running Deployments rather than
+inferred from the diff:
+
+```
+mcp-dev   image digest: sha256:feeeae5e3c0764a2d79f34bbac1150c568a0f0e93c102f01d341b2631bd75761
+mcp-stage image digest: sha256:feeeae5e3c0764a2d79f34bbac1150c568a0f0e93c102f01d341b2631bd75761
+```
+
+Identical. Stage is running the *same bytes* dev validated — no rebuild, no tag ambiguity.
+That is the entire point of the pipeline, and it is now demonstrated rather than asserted.
+
+One cosmetic wart: `yq -i` strips blank lines between top-level blocks in the rewritten
+overlay. All WHY-comments survive (verified: zero comment lines removed in the PR #22 diff),
+only vertical whitespace is lost. Not worth a `yq` wrapper or a formatter step for a
+two-line diff, but noted so the next reader does not mistake it for accidental damage.
