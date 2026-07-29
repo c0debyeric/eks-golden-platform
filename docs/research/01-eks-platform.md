@@ -1,5 +1,12 @@
 # 01 — EKS Platform Layer (Terraform)
 
+> **SUPERSEDED PINS (audit 2026-07-29):** this doc names Kubernetes **1.33**, whose EKS standard
+> support ENDED 2026-07-29 — past that date the control plane re-prices from ~$73/mo to ~$438/mo
+> (the trap described in §7, which this repo walked into). Live pin is now **1.34** (standard
+> support to 2026-12-02), and Karpenter is on chart **1.14.0**. Everything else here — the module,
+> Pod Identity vs IRSA, Access Entries, the NAT and cost analysis — is unchanged and still correct.
+> See the addendum in `RESEARCH.md`.
+
 > Golden-standard research for the EKS platform/infrastructure layer, provisioned by Terraform.
 > Scope: cluster, compute (Karpenter/Auto Mode), identity (Pod Identity/IRSA), networking, add-ons,
 > security, and cost. GitOps (ArgoCD/Helm) and observability are covered in `02-*` and `03-*`.
@@ -41,8 +48,9 @@ sub-module.
 - **Current major:** `~> 21.0` (v21 line as of 2026-07). Use `>=` at the latest major uniformly
   across the repo (Eric's convention: `version = ">= 21.0"` not `~> 21.0` if you want floating
   within-major, but pin a floor). Source: https://github.com/terraform-aws-modules/terraform-aws-eks/releases
-- **Kubernetes version:** `1.33` is the module's documented example default and a safe current
-  choice. AVOID drifting into EKS *extended support* (adds the $438/mo trap — see §7).
+- **Kubernetes version:** `1.33` was the module's documented example default and a safe choice
+  *as of 2026-07*. It is NOT safe now — 1.33 standard support ended 2026-07-29; use **1.34+**.
+  AVOID drifting into EKS *extended support* (adds the $438/mo trap — see §7).
 - **v21 breaking changes vs v20:** variable renames (`cluster_*` → top-level, e.g.
   `cluster_version` → `kubernetes_version`), Auto Mode wiring via `compute_config`, and
   `create_auto_mode_iam_resources`. Read the v21 UPGRADE guide before copying old v20 examples.

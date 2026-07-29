@@ -1,5 +1,12 @@
 # 02 — GitOps Delivery Layer (ArgoCD + Helm)
 
+> **SUPERSEDED PINS (audit 2026-07-29):** this doc names ArgoCD **3.1.x** / chart `7.x`, whose
+> upstream support ENDED 2026-05-05; live pin is chart **10.2.1** (app **v3.4.5**) — note the chart
+> major is not the app version. The External Secrets example also shows
+> `external-secrets.io/v1`, which is now the ONLY served version (v1beta1 serving was removed
+> 2026-05-01, chart pinned at **2.8.0**). The app-of-apps / sync-wave / multi-source ARCHITECTURE
+> below is unchanged and still correct. See the addendum in `RESEARCH.md`.
+
 > Golden-standard research for the GitOps layer: ArgoCD, app-of-apps / ApplicationSets, Helm
 > packaging, sync waves, and secrets in a PUBLIC repo. Platform (EKS) is doc 01; observability
 > workloads are doc 03. Research date: 2026-07.

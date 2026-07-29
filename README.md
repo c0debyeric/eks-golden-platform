@@ -14,7 +14,7 @@ Infrastructure-as-Code and GitOps — with a documented cheap teardown/spin-up l
 
 > **Terraform owns the disposable cluster; Git owns everything running on it.**
 
-1. **Terraform** provisions the platform (VPC with 3-tier subnets, EKS 1.33, Karpenter, Pod Identity
+1. **Terraform** provisions the platform (VPC with 3-tier subnets, EKS 1.34, Karpenter, Pod Identity
    roles, managed add-ons, an optional RDS PostgreSQL data tier) and installs exactly one
    application-layer thing: **ArgoCD**, plus a root app-of-apps manifest.
 2. **ArgoCD** then reconciles the *entire* workload layer from this Git repo — the AWS Load
@@ -33,6 +33,9 @@ Design rationale and every version/decision is documented in [`docs/research/`](
 ```
 eks-golden-platform/
 ├── Makefile                    # make up / down / status / argocd-ui
+├── renovate.json               # automated pin bumps (terraform + helm + argocd managers)
+├── scripts/
+│   └── crd_apiversion_gate.py  # CI gate: committed CR apiVersions must be SERVED by the pinned chart
 ├── terraform/                  # PLATFORM layer (disposable cluster)
 │   ├── versions.tf             # provider pins (>= at current major, uniform) + S3 backend
 │   ├── variables.tf            # cost vs. HA knobs (single_nat, endpoint access, RDS, ci_role)
@@ -75,6 +78,8 @@ eks-golden-platform/
 | Metrics | kube-prometheus-stack 87.x | Operator + Prometheus + Grafana + Alertmanager |
 | Logs | Loki 3.x SingleBinary → S3 | cheap; logs survive teardown; native OTLP ingest |
 | Traces | Tempo monolithic → S3 | object-storage-native distributed tracing; traces survive teardown; OTLP ingest |
+| Chart source | **grafana-community/helm-charts** for Loki/Tempo | Grafana forked the OSS charts (2026-03); the old repo is Enterprise-only maintenance |
+| Secrets API | `external-secrets.io/v1` | ESO removed `v1beta1` serving 2026-05-01 |
 | Telemetry | OpenTelemetry Operator + Collector | unified metrics+logs+traces pipeline |
 | Data | RDS PostgreSQL 18.4, **Multi-AZ + 2 read replicas** | HA standby (failover) + read scaling; isolated NAT-less DB tier |
 | Network | 3-tier subnets (public/private/**database**) | database tier has no egress route — defense in depth |
@@ -143,6 +148,24 @@ Demo floor (single NAT,   ~$110-140/mo   set single_nat_gateway=true, create_rds
 ⚠️ **Keep `kubernetes_version` current.** Falling into EKS *extended support* raises the control
 plane to ~$438/mo. See [`docs/research/01-eks-platform.md`](docs/research/01-eks-platform.md) §7.
 
+## Version currency
+
+Pins rot, and the expensive ones rot **silently** — a stale cluster minor throws no error, it just
+re-prices the control plane. Two mechanisms keep this repo honest so the drift never has to be
+found by hand again:
+
+- **Renovate** (`renovate.json`) watches the Terraform modules, the Helm charts pinned in
+  `gitops/bootstrap/*.yaml` (via the `argocd` manager), *and* the EKS minor — which lives in a
+  Terraform variable default where no standard manager would see it. Platform-critical controllers
+  get their own PRs; the observability charts are grouped.
+- **`gitops-contract` CI job** renders every pinned chart against its committed values and asserts
+  each committed CR's `apiVersion` is actually **served** by that chart
+  (`scripts/crd_apiversion_gate.py`). This catches the failure that otherwise appears only at sync
+  time as ArgoCD's opaque `one or more synchronization tasks are not valid`.
+
+Current standard-support deadline to watch: **EKS 1.34 → 2026-12-02**. Upgrade one minor at a time,
+control plane before charts.
+
 ## Security & public-repo safety
 
 - No secret values in Git — External Secrets Operator commits only *pointers* to AWS Secrets
@@ -185,6 +208,10 @@ as Terraform outputs (`rds_primary_endpoint`, `rds_replica_endpoints`, `rds_mast
 
 - **Keyless** — the workflow assumes `AWS_ROLE_ARN` via GitHub OIDC (no static keys in the repo).
 - **`lint` job**: `terraform fmt -check` + `validate` (no cloud calls).
+- **`gitops-contract` job**: renders each pinned Helm chart against its committed values and runs
+  `scripts/crd_apiversion_gate.py` to assert every committed CR's `apiVersion` is served by that
+  chart. No cloud calls, so it runs on PRs. Chart versions are parsed out of the Application
+  manifests, so the job can't drift from the pins it validates.
 - **`plan` job**: OIDC assume → `terraform plan` **scoped to the AWS-infra layer** via `-target`
   (VPC/EKS/Karpenter/IAM/S3). GitOps-managed resources (Helm/ArgoCD CRDs) and the gated RDS module
   are excluded — the CI role stays least-privilege and the plan doesn't show false teardowns of
