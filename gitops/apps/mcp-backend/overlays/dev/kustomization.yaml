@@ -1,0 +1,77 @@
+# dev overlay — namespace mcp-dev on the shared eks-golden cluster.
+#
+# WHY dev is the cheapest env: 1 replica and no PDB. A PodDisruptionBudget with
+# minAvailable:1 on a single-replica Deployment BLOCKS voluntary eviction outright —
+# Karpenter consolidation and node drains would stall forever waiting for a second pod
+# that never exists. Dev is also the env we most want Karpenter to be free to bin-pack
+# and recycle aggressively, so the PDB is deleted rather than tuned.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Every object from the base lands here. This is the ONLY place the env namespace is
+# declared, so a copy/paste error produces a wrong-namespace deploy, not a cross-env one.
+namespace: mcp-dev
+
+resources:
+  - ../../base
+
+# Distinguishes this env's objects in dashboards and `kubectl get -l` without renaming
+# the workload (name stays mcp-backend so the Service DNS is stable per namespace).
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/instance: mcp-backend-dev
+      environment: dev
+
+# Promotion target. The CI write-back step rewrites newTag here ONLY.
+#
+# WHY pinned by DIGEST, not tag: ECR tags are immutable in this repo, but a digest is
+# immutable by construction and survives even a repo-policy change. It also means the
+# artifact promoted to stage is provably the identical bytes dev validated — a tag could
+# in principle be re-pointed, a digest cannot.
+images:
+  - name: PLACEHOLDER_IMAGE
+    newName: 810749429738.dkr.ecr.us-east-1.amazonaws.com/mcp-backend
+    newTag: dev-bootstrap
+
+replicas:
+  - name: mcp-backend
+    count: 1
+
+# Drop the PDB (see header): single replica + minAvailable:1 deadlocks node drains.
+patches:
+  - target:
+      kind: PodDisruptionBudget
+      name: mcp-backend
+    patch: |
+      $patch: delete
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: mcp-backend
+
+  # Env-specific telemetry identity. Without this, dev spans are tagged as production
+  # and pollute prod dashboards/alerting.
+  #
+  # WHY a strategic-merge patch keyed by env NAME rather than a JSON patch on
+  # /env/3 and /env/5: positional indices silently target the wrong variable the moment
+  # anyone reorders or inserts an env var in the base. Kubernetes merges container env
+  # lists by the `name` key, so this stays correct regardless of ordering.
+  - target:
+      kind: Deployment
+      name: mcp-backend
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: mcp-backend
+      spec:
+        template:
+          spec:
+            containers:
+              - name: mcp-backend
+                env:
+                  - name: OTEL_DEPLOYMENT_ENVIRONMENT
+                    value: dev
+                  - name: OTEL_RESOURCE_ATTRIBUTES
+                    value: "service.namespace=mcp-dev,k8s.namespace.name=mcp-dev,k8s.pod.name=$(POD_NAME)"

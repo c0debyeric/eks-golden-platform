@@ -126,6 +126,19 @@ jobs:
           print(f"PASS: NodePool memory floor = {floor}MiB (>= 4095)")
           PY
 
+      # Multi-env kustomize overlays: dev/stage/prod are three NAMESPACES on the one
+      # cluster, all rendered from a single shared base. Two mistakes are silent there
+      # because both produce a VALID render that Argo CD reports as Synced:
+      #   - two overlays naming the same namespace (one env overwrites the other in place)
+      #   - a committed placeholder image, which is exactly how REPLACE_WITH_GIT_SHA
+      #     reached the cluster and pinned the Deployment in InvalidImageName
+      # Gate asserts namespace uniqueness and that no base sentinel survives rendering.
+      # Verified to fail on all three injected defects, not just to pass when clean.
+      - name: mcp-backend — per-env kustomize overlays are unique and placeholder-free
+        run: |
+          set -euo pipefail
+          python3 scripts/kustomize_overlay_gate.py gitops/apps/mcp-backend
+
       # Catches invalidated values keys after a bump (a chart with values.schema.json rejects
       # unknown keys outright, which leaves the ArgoCD app stuck "Unknown" — it can't even render).
       #
