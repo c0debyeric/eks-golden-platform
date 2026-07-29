@@ -4,6 +4,23 @@ serviceAccount:
   create: true
   name: external-secrets
 installCRDs: true
+# ESO 2.x introduced a `crds:` block alongside installCRDs. Two settings here are load-bearing:
+#
+# conversion.enabled=false — the 1.x chart installed a v1beta1<->v1 conversion WEBHOOK on the CRDs.
+#   2.x drops it, but a webhook block left over from the old install makes every ArgoCD sync fail:
+#     spec.conversion.strategy: Required value
+#     spec.conversion.webhookClientConfig: Forbidden: should not be set when strategy is not Webhook
+#   Declaring it false keeps Git as the source of truth for that removal.
+#
+# unsafeServeV1Beta1=false — v1beta1 is NOT served by the 2.8.0 controller (it only registers v1).
+#   Leaving it false is correct, but it means any CR still STORED as v1beta1 is orphaned: the
+#   controller crashes with `no matches for kind "ExternalSecret" in version
+#   "external-secrets.io/v1"`. Migrate stored objects to v1 BEFORE/while bumping — rewrite each CR
+#   (kubectl get <kind> <n> -o json | kubectl replace -f -) then prune status.storedVersions.
+crds:
+  conversion:
+    enabled: false
+  unsafeServeV1Beta1: false
 resources:
   requests:
     cpu: 25m
