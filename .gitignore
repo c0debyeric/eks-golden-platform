@@ -74,3 +74,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# python — scripts/ holds the CI gates; running them locally drops bytecode next to
+# the source, which would otherwise show up as an untracked change during PR review.
+__pycache__/
+*.py[cod]
