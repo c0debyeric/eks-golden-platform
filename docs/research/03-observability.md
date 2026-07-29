@@ -1,5 +1,13 @@
 # 03 — Observability Stack (Prometheus, Grafana, Loki, Tempo, OpenTelemetry)
 
+> **SUPERSEDED PINS (audit 2026-07-29):** the chart versions and the `grafana.github.io/helm-charts`
+> repo URL named in this doc are the as-researched 2026-07 record and are now stale. The OSS Loki
+> and Tempo charts were **forked to `grafana-community/helm-charts`** (the old repo is
+> Enterprise-only maintenance mode and now emits `WARNING: This chart is deprecated`); live pins are
+> `loki 18.7.0`, `tempo 2.2.3`, `kube-prometheus-stack 87.21.0`, `opentelemetry-operator 0.120.0`.
+> The deployment-mode and pipeline ARCHITECTURE below is unchanged and still correct. See the
+> addendum in `RESEARCH.md`.
+
 > Golden-standard research for the observability layer: metrics (Prometheus), dashboards
 > (Grafana), logs (Loki), traces (Tempo), and the telemetry pipeline (OpenTelemetry). Everything
 > here is deployed as an ArgoCD Application → upstream Helm chart (doc 02). Platform is doc 01.

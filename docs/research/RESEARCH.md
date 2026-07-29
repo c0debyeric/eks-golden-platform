@@ -1,7 +1,7 @@
 # EKS Golden Platform — Research & Reference
 
 > **Bottom line up front:** the 2026 golden-standard EKS portfolio stack is a **Terraform platform
-> layer** (VPC + `terraform-aws-modules/eks ~> 21.0`, K8s 1.33, Karpenter v1.x, EKS Pod Identity,
+> layer** (VPC + `terraform-aws-modules/eks ~> 21.0`, K8s 1.34, Karpenter v1.x, EKS Pod Identity,
 > Access Entries) that bootstraps **ArgoCD**, which then GitOps-syncs the **entire application
 > layer** (AWS LB Controller, External Secrets, and the observability stack) via an app-of-apps of
 > pinned upstream Helm charts. The architectural spine is: **Terraform owns the disposable cluster;
@@ -10,6 +10,37 @@
 
 This directory is the reference documentation researched before building. It reflects upstream
 versions and recommendations verified 2026-07 (sources cited inline in each doc).
+
+> ### Addendum — currency audit 2026-07-29
+>
+> The **architecture** below is unchanged and still correct: nothing in the 2026 landscape
+> invalidated the Karpenter-over-Auto-Mode, Pod-Identity-over-IRSA, or app-of-apps decisions.
+> What had rotted was **pins**. The version numbers written inline in these docs are preserved as
+> the as-researched record; the *live* pins now sit in `terraform/variables.tf` and
+> `gitops/bootstrap/*.yaml`, and are kept current by Renovate.
+>
+> ```diff
+> ! EKS minor        1.33 -> 1.34   standard support for 1.33 ENDED 2026-07-29
+>                                   (control plane $73 -> ~$438/mo on extended support)
+> - external-secrets 0.10.7 -> 2.8.0    v1beta1 serving REMOVED 2026-05-01; CRs migrated to v1
+> - loki             6.24.0 -> 18.7.0   OSS chart FORKED to grafana-community/helm-charts
+> - tempo            1.24.4 -> 2.2.3    same fork; old repo now emits "chart is deprecated"
+> - cert-manager     v1.16.2 -> v1.21.0 was several EOL cycles past support
+> - karpenter        1.0.8 -> 1.14.0    v1 APIs stable, no manifest migration needed
+> - alb-controller   1.9.2 -> 3.4.3     chart version REALIGNED with controller version at v3.0.0
+> - argo-cd chart    7.7.0 -> 10.2.1    app 3.1 support ended 2026-05-05; now app v3.4.5
+> - kube-prom-stack  87.16.1 -> 87.21.0 routine same-major drift
+> ```
+>
+> Ecosystem items with no pin here but real blast radius: **ingress-nginx retired March 2026**
+> (deliberately absent from this stack — the ALB controller and Gateway API are the paths forward),
+> **containerd 1.x support ends at k8s 1.35**, and **Promtail is deprecated** (this stack uses the
+> OTel Collector). EKS Auto Mode still carries the +12% EC2 surcharge, so self-managed Karpenter
+> remains the right economic call.
+>
+> Two mechanisms now prevent a repeat: `renovate.json` (incl. a custom manager for the EKS minor,
+> which no standard manager can see) and the `gitops-contract` CI job with
+> `scripts/crd_apiversion_gate.py`.
 
 ---
 
@@ -20,7 +51,7 @@ docs/research/
 ├── RESEARCH.md                 <- you are here (index + synthesis)
 ├── 01-eks-platform.md          Terraform: VPC, EKS module, Karpenter, Pod Identity,
 │                               Access Entries, add-ons, security, COST + teardown lifecycle
-├── 02-gitops-argocd-helm.md    ArgoCD 3.1, app-of-apps, Helm multi-source, sync waves,
+├── 02-gitops-argocd-helm.md    ArgoCD 3.x, app-of-apps, Helm multi-source, sync waves,
 │                               External Secrets Operator (public-repo-safe secrets)
 └── 03-observability.md         kube-prometheus-stack, Grafana, Loki 3.x (S3, SingleBinary),
                                 Tempo (S3, monolithic), OpenTelemetry Operator/Collector,
@@ -85,7 +116,7 @@ Telemetry      OpenTelemetry Operator+Collector  Grafana Alloy (valid alt; pick 
 ## Build order (what the scaffold implements)
 
 ```
-1. terraform apply   -> VPC, EKS 1.33, Karpenter IAM+SQS, managed add-ons, Pod Identity roles
+1. terraform apply   -> VPC, EKS 1.34, Karpenter IAM+SQS, managed add-ons, Pod Identity roles
 2. helm_release      -> ArgoCD (bootstrap, once)
 3. kubectl apply     -> root app-of-apps Application
 4. ArgoCD sync waves -> ALB controller & Karpenter NodePools (w0) -> ESO (w1) ->

@@ -2,6 +2,51 @@
 # node group that exists only to host Karpenter + core controllers. Actual workload
 # capacity is provisioned by Karpenter (see compute.tf), not by a static node group.
 
+# Who is actually running Terraform right now. Used ONLY by the guard below.
+data "aws_caller_identity" "current" {}
+
+# GUARD: refuse to run as the CI role.
+#
+# enable_cluster_creator_admin_permissions (below) derives cluster-admin from the caller
+# identity AT APPLY TIME. An apply from CI therefore REPLACES the cluster_creator access entry,
+# handing cluster-admin to the GitHub Actions OIDC role and REVOKING the human operator's
+# kubectl access. That is unrecoverable without a second admin principal.
+#
+# CI is plan-only today, so this can't happen by accident — but "CI is plan-only" is a
+# convention, and conventions get changed by a future PR that adds an apply job. This makes the
+# invariant enforceable instead of aspirational.
+#
+# WHY a lifecycle precondition and NOT a `check` block: a failed `check` assertion is only a
+# WARNING — terraform still exits 0 and the apply proceeds. It would politely narrate the
+# admin takeover while allowing it. A precondition is a hard ERROR that aborts plan and apply
+# (verified: exit 1 vs exit 0). For a guard whose whole job is to STOP something, that
+# distinction is the entire point.
+#
+# terraform_data is a built-in (no provider), so this adds no dependencies.
+resource "terraform_data" "apply_identity_guard" {
+  # Recorded in state so a change of operator identity is visible in the plan diff.
+  input = data.aws_caller_identity.current.arn
+
+  lifecycle {
+    precondition {
+      # strcontains on the role NAME, because an assumed-role ARN is
+      # sts::assumed-role/<name>/<session> and never string-equals the iam::role/<name> ARN in
+      # var.ci_role_arn — a naive == would never fire. No-ops when ci_role_arn is unset.
+      condition = !(var.ci_role_arn != "" && strcontains(
+        data.aws_caller_identity.current.arn,
+        reverse(split("/", var.ci_role_arn))[0]
+      ))
+      error_message = join(" ", [
+        "Refusing to run as the CI principal (${data.aws_caller_identity.current.arn}).",
+        "enable_cluster_creator_admin_permissions would replace the cluster_creator access entry",
+        "and revoke the human operator's cluster-admin. Run as your own IAM principal, or set",
+        "enable_cluster_creator_admin_permissions = false and declare admins explicitly in",
+        "access_entries first."
+      ])
+    }
+  }
+}
+
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = ">= 21.0"
@@ -9,8 +54,22 @@ module "eks" {
   name               = var.name
   kubernetes_version = var.kubernetes_version
 
-  endpoint_public_access                   = var.endpoint_public_access
-  enable_cluster_creator_admin_permissions = true # Access Entries: add caller as admin
+  endpoint_public_access = var.endpoint_public_access
+
+  # DANGER — this derives cluster-admin from WHOEVER RUNS `terraform apply`, not from a fixed
+  # principal. The module reads the caller identity at apply time and writes it as the
+  # "cluster_creator" access entry. Consequences to understand before you apply from anywhere new:
+  #
+  #   * Applying from a DIFFERENT identity than the original creator REPLACES that entry
+  #     (principal_arn forces replacement) and REVOKES the previous admin's kubectl access.
+  #   * Applying from CI would therefore hand cluster-admin to the GitHub Actions OIDC role and
+  #     lock the human operator out — which is exactly why this repo's CI is plan-only and the
+  #     `plan` job is scoped with -target. Never add an `apply` job to CI while this is true.
+  #
+  # This is safe as-is for a single-operator platform. If this ever becomes a team cluster, set
+  # this to false and declare admins EXPLICITLY as access_entries below, so admin identity is
+  # reviewable in Git instead of being a side effect of who ran the last apply.
+  enable_cluster_creator_admin_permissions = true
 
   # Grant the CI runner (GitHub Actions OIDC role) a READ-ONLY access entry so `terraform plan`
   # in CI can authenticate to the K8s API and refresh in-cluster resources (helm_release,
