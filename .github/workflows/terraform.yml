@@ -38,6 +38,87 @@ jobs:
           terraform -chdir=terraform init -backend=false -input=false
           terraform -chdir=terraform validate
 
+  # GitOps chart/manifest contract check. No cloud access — runs on PRs like lint.
+  #
+  # WHY this job exists: the highest-frequency ArgoCD failure in this repo's history is a
+  # committed CR whose apiVersion the pinned chart no longer serves. It surfaces only as
+  # "one or more synchronization tasks are not valid" — naming neither the resource nor the
+  # version — and it is invisible to terraform fmt/validate. Renovate will now open chart-bump
+  # PRs automatically, so this gate is what stops a well-meaning bump from silently breaking
+  # the secrets pipeline at sync time instead of at review time.
+  gitops-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
+      # Render each pinned chart, then assert every committed CR's apiVersion is SERVED by it.
+      # Chart versions are read from the Application manifests so this can't drift from them.
+      - name: External Secrets — CR apiVersions are served by the pinned chart
+        run: |
+          set -euo pipefail
+          ESO_VER=$(grep -oP 'targetRevision:\s*\K[0-9]+\.[0-9]+\.[0-9]+' \
+            gitops/bootstrap/external-secrets.yaml | head -1)
+          echo "Pinned external-secrets chart: ${ESO_VER}"
+          helm repo add eso https://charts.external-secrets.io >/dev/null
+          helm repo update >/dev/null
+          helm template eso eso/external-secrets --version "${ESO_VER}" \
+            -n external-secrets -f gitops/apps/external-secrets/values.yaml > /tmp/eso.yaml
+          python3 scripts/crd_apiversion_gate.py /tmp/eso.yaml \
+            gitops/apps/external-secrets/clustersecretstore.yaml
+
+      # Karpenter ships CRDs in crds/ (NOT templates/), so `helm template` renders zero CRDs and
+      # would produce a false PASS. The chart must be pulled and untarred to inspect them.
+      - name: Karpenter — CR apiVersions are served by the pinned chart
+        run: |
+          set -euo pipefail
+          KARP_VER=$(grep -oP 'targetRevision:\s*\K[0-9]+\.[0-9]+\.[0-9]+' \
+            gitops/bootstrap/karpenter.yaml | head -1)
+          echo "Pinned karpenter chart: ${KARP_VER}"
+          rm -rf /tmp/karp && mkdir -p /tmp/karp
+          helm pull oci://public.ecr.aws/karpenter/karpenter \
+            --version "${KARP_VER}" --untar --untardir /tmp/karp
+          cat /tmp/karp/karpenter/crds/*.yaml > /tmp/karp_crds.yaml
+          python3 scripts/crd_apiversion_gate.py /tmp/karp_crds.yaml \
+            gitops/apps/karpenter/nodepool.yaml \
+            gitops/apps/karpenter/ec2nodeclass.yaml
+
+      # Catches invalidated values keys after a bump (a chart with values.schema.json rejects
+      # unknown keys outright, which leaves the ArgoCD app stuck "Unknown" — it can't even render).
+      #
+      # NOTE this step is deliberately STRICT and therefore requires the audit's chart bumps to be
+      # merged. Verified locally: opentelemetry-operator 0.90.4 ships a values.schema.json that is
+      # itself malformed (featureGates.examples declared a string where JSON Schema 2019-09 wants
+      # an array), which modern Helm rejects outright — so the OLD pin cannot render at all, while
+      # 0.120.0 renders clean. Loosening the gate to accommodate a broken chart would defeat it.
+      - name: All charts render against committed values
+        run: |
+          set -euo pipefail
+          helm repo add grafana-community https://grafana-community.github.io/helm-charts >/dev/null
+          helm repo add prom https://prometheus-community.github.io/helm-charts >/dev/null
+          helm repo add otel https://open-telemetry.github.io/opentelemetry-helm-charts >/dev/null
+          helm repo add eks-charts https://aws.github.io/eks-charts >/dev/null
+          helm repo update >/dev/null
+          render() {  # chart_ref, manifest_with_pin, namespace, values_file
+            ver=$(grep -oP 'targetRevision:\s*\K[0-9]+\.[0-9]+\.[0-9]+' "$2" | head -1)
+            echo "==> $1 @ ${ver}"
+            helm template t "$1" --version "${ver}" -n "$3" -f "$4" >/dev/null
+          }
+          render grafana-community/loki gitops/bootstrap/loki.yaml logging \
+            gitops/apps/loki/values.yaml
+          render grafana-community/tempo gitops/bootstrap/tempo.yaml tracing \
+            gitops/apps/tempo/values.yaml
+          render prom/kube-prometheus-stack gitops/bootstrap/kube-prometheus-stack.yaml monitoring \
+            gitops/apps/kube-prometheus-stack/values.yaml
+          render otel/opentelemetry-operator gitops/bootstrap/otel-operator.yaml observability \
+            gitops/apps/otel-operator/values.yaml
+          render eks-charts/aws-load-balancer-controller gitops/bootstrap/alb-controller.yaml \
+            kube-system gitops/apps/alb-controller/values.yaml
+
   # Plan against the real account. Only on main, where the OIDC role trust allows it.
   plan:
     if: github.ref == 'refs/heads/main'
