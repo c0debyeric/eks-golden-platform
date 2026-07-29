@@ -87,6 +87,45 @@ jobs:
             gitops/apps/karpenter/nodepool.yaml \
             gitops/apps/karpenter/ec2nodeclass.yaml
 
+      # apiVersion alone is NOT enough. On 2026-07-29 the apiVersion gate passed
+      # (NodePool karpenter.sh/v1 is served) while Karpenter rejected every NodeClaim it computed:
+      #   spec.requirements[6].operator: Unsupported value: "Gte"
+      # Karpenter 1.14 ADDED the Gte/Lte operators, but the cluster still had CRDs from the 1.0.8
+      # chart, because `helm upgrade` does NOT touch crds/. Net effect: zero capacity could be
+      # provisioned, ArgoCD + cert-manager + ESO went Pending, and the argo-cd upgrade failed.
+      # This step validates committed field VALUES against the pinned chart's CRD schema (enum
+      # constraints), so an operator/policy value that a bump adds or removes fails in review.
+      - name: Karpenter — CR field values satisfy the pinned chart's CRD schema
+        run: |
+          set -euo pipefail
+          python3 scripts/crd_schema_gate.py /tmp/karp_crds.yaml \
+            gitops/apps/karpenter/nodepool.yaml \
+            gitops/apps/karpenter/ec2nodeclass.yaml
+
+      # A NodePool with no memory floor lets Karpenter pick a 2GiB *.medium while VPC CNI prefix
+      # delegation advertises 40 allocatable pods on it. The scheduler then packs ~16 pods onto
+      # ~1GiB, the node OOMs hard enough to kill its own kubelet, and every pod on it hangs
+      # Terminating forever because nothing is left to reap them. That is precisely the
+      # 2026-07-29 c9g.medium failure. Assert the floor exists so it can't silently regress.
+      - name: Karpenter — NodePool declares a memory floor
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys, yaml
+          pool = yaml.safe_load(open("gitops/apps/karpenter/nodepool.yaml"))
+          reqs = pool["spec"]["template"]["spec"]["requirements"]
+          mem = [r for r in reqs if r["key"] == "karpenter.k8s.aws/instance-memory"]
+          if not mem:
+              sys.exit(
+                  "FAIL: NodePool has no karpenter.k8s.aws/instance-memory requirement.\n"
+                  "Without a floor Karpenter may select a ~2GiB node that OOM-kills its kubelet."
+              )
+          floor = min(int(v) for r in mem for v in r["values"])
+          if floor < 4095:
+              sys.exit(f"FAIL: instance-memory floor {floor}MiB is below the 4095MiB minimum.")
+          print(f"PASS: NodePool memory floor = {floor}MiB (>= 4095)")
+          PY
+
       # Catches invalidated values keys after a bump (a chart with values.schema.json rejects
       # unknown keys outright, which leaves the ArgoCD app stuck "Unknown" — it can't even render).
       #

@@ -28,6 +28,23 @@ spec:
     # Compatible with EKS 1.34.
     targetRevision: 1.14.0
     helm:
+      # Render the chart's crds/ directory as ordinary manifests so ArgoCD MANAGES the CRDs.
+      #
+      # WHY: `helm upgrade` deliberately never touches crds/ -- it installs those files once and
+      # never again. ArgoCD's Helm source inherits that behavior, so without this flag the CRDs
+      # stay frozen at whatever version FIRST installed them while the controller image tracks
+      # targetRevision. On 2026-07-29 that skew broke the cluster outright: the 1.14.0 controller
+      # computed NodeClaims using the Gte operator (added in 1.14) against CRDs still shipped by
+      # 1.0.8, so the API server rejected EVERY provisioning attempt --
+      #   spec.requirements[6].operator: Unsupported value: "Gte"
+      # -- and no capacity could be created at all. Pods sat Pending, cert-manager/ESO/ArgoCD were
+      # stranded, and the fix had to be applied by hand with kubectl.
+      #
+      # With this flag the CRDs move in lockstep with the chart pin, so a Renovate bump can no
+      # longer desync them. Paired with ServerSideApply=true below, which is REQUIRED: Karpenter's
+      # CRDs exceed the 262144-byte last-applied-configuration annotation limit that client-side
+      # apply would impose.
+      skipCrds: false
       valuesObject:
         settings:
           clusterName: eks-golden

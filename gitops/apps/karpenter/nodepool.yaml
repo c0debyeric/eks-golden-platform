@@ -19,6 +19,23 @@ spec:
         - key: karpenter.k8s.aws/instance-generation
           operator: Gt
           values: ["4"]                         # modern generations only
+        # Memory FLOOR. Without this, Karpenter is free to pick the cheapest instance that
+        # satisfies CPU alone -- in practice a *.medium with 2048MiB (~1GiB allocatable). VPC CNI
+        # prefix delegation then advertises 40 allocatable pods on that node, so the scheduler
+        # packs ~16+ pods onto ~1GiB and the node OOMs hard enough to kill its own kubelet. The
+        # node goes NotReady, pods hang Terminating forever (kubelet is gone, so nothing reaps
+        # them), and any in-flight helm upgrade fails its pre-upgrade hooks.
+        #
+        # This is exactly how it failed on 2026-07-29: a c9g.medium (instance-memory=2048,
+        # allocatable pods=40) died ~13s after joining, stranding cert-manager + external-secrets
+        # + the whole ArgoCD control plane and blocking the argo-cd 10.2.1 upgrade.
+        #
+        # 4096MiB is the floor where allocatable RAM (~3.2GiB) is credible against the pod density
+        # the CNI advertises. Gt (not Gte) because the enum is version-dependent -- Karpenter
+        # added Gte/Lte in 1.14, so Gt keeps this manifest valid on older CRDs too.
+        - key: karpenter.k8s.aws/instance-memory
+          operator: Gt
+          values: ["4095"]                      # => >= 4096MiB; excludes the fatal *.medium tier
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
