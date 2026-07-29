@@ -90,9 +90,19 @@ variable "rds_engine_version" {
 
 
 variable "argocd_chart_version" {
-  description = "Pinned argo-cd Helm chart version installed at bootstrap."
+  description = <<-EOT
+    Pinned argo-cd Helm chart version installed at bootstrap.
+
+    Chart 10.2.1 ships ArgoCD app v3.4.5. The previous pin (7.7.0) shipped the 3.1 line, whose
+    upstream support ENDED 2026-05-05 — ArgoCD supports roughly the latest three minors, and it
+    is the component holding cluster-admin over every workload, so a stale pin here is the
+    least acceptable one in the stack.
+
+    NOTE the two different version numbers: the CHART major (10.x) is not the ArgoCD app
+    version (3.4.x). Compare app versions, not chart versions, when checking support status.
+  EOT
   type        = string
-  default     = "7.7.0"
+  default     = "10.2.1"
 }
 
 variable "git_repo_url" {
