@@ -28,8 +28,8 @@ labels:
 images:
   - name: PLACEHOLDER_IMAGE
     newName: 810749429738.dkr.ecr.us-east-1.amazonaws.com/mcp-backend
-    newTag: f2d77b11de0e
-    digest: sha256:42e4de8e8c7c8c07bb77f9a729b2e99e141465b966c806b34e7769f221446065
+    newTag: a7b96ed603df
+    digest: sha256:feeeae5e3c0764a2d79f34bbac1150c568a0f0e93c102f01d341b2631bd75761
 replicas:
   - name: mcp-backend
     count: 1
