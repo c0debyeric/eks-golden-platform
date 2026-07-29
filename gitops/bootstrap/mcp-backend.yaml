@@ -1,0 +1,25 @@
+# mcp-backend — the sample APPLICATION workload (source: application/backend),
+# plain manifests (Deployment + Service + PDB) under gitops/apps/mcp-backend.
+# Sync wave 5: after the observability stack (otel-operator wave 2, gateway
+# collector wave 3) so the OTLP endpoint exists by the time pods start.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mcp-backend
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/c0debyeric/eks-golden-platform.git
+    path: gitops/apps/mcp-backend
+    targetRevision: main
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: application
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]

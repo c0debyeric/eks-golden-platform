@@ -1,0 +1,15 @@
+# Keep at least one replica serving during voluntary disruptions (node drains,
+# Karpenter consolidation, rolling upgrades).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mcp-backend
+  namespace: application
+  labels:
+    app.kubernetes.io/name: mcp-backend
+    app.kubernetes.io/part-of: eks-golden-platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mcp-backend
