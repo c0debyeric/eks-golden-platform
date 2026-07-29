@@ -5,7 +5,7 @@
 # Who is actually running Terraform right now. Used ONLY by the guard below.
 data "aws_caller_identity" "current" {}
 
-# GUARD: refuse to apply as the CI role.
+# GUARD: refuse to run as the CI role.
 #
 # enable_cluster_creator_admin_permissions (below) derives cluster-admin from the caller
 # identity AT APPLY TIME. An apply from CI therefore REPLACES the cluster_creator access entry,
@@ -13,27 +13,37 @@ data "aws_caller_identity" "current" {}
 # kubectl access. That is unrecoverable without a second admin principal.
 #
 # CI is plan-only today, so this can't happen by accident — but "CI is plan-only" is a
-# convention, and conventions get changed by a future PR that adds an apply job. This turns the
-# convention into an enforced invariant: the apply FAILS FAST with an actionable message instead
-# of silently stealing admin. Costs one STS call; catches a class of outage.
+# convention, and conventions get changed by a future PR that adds an apply job. This makes the
+# invariant enforceable instead of aspirational.
 #
-# Deliberately a check block (not a precondition on the module) so it evaluates on plan too,
-# surfacing the problem in CI review output rather than only at apply time.
-check "apply_identity_is_not_ci" {
-  assert {
-    condition = var.ci_role_arn == "" || !strcontains(
-      data.aws_caller_identity.current.arn,
-      # Compare on the role NAME, since an assumed-role ARN is sts::assumed-role/<name>/<session>
-      # and never string-equals the iam::role/<name> ARN in var.ci_role_arn.
-      reverse(split("/", var.ci_role_arn))[0]
-    )
-    error_message = join(" ", [
-      "Refusing to run as the CI principal (${data.aws_caller_identity.current.arn}).",
-      "enable_cluster_creator_admin_permissions would replace the cluster_creator access entry",
-      "and revoke the human operator's cluster-admin. Run apply as your own IAM principal, or",
-      "set enable_cluster_creator_admin_permissions = false and declare admins explicitly in",
-      "access_entries first."
-    ])
+# WHY a lifecycle precondition and NOT a `check` block: a failed `check` assertion is only a
+# WARNING — terraform still exits 0 and the apply proceeds. It would politely narrate the
+# admin takeover while allowing it. A precondition is a hard ERROR that aborts plan and apply
+# (verified: exit 1 vs exit 0). For a guard whose whole job is to STOP something, that
+# distinction is the entire point.
+#
+# terraform_data is a built-in (no provider), so this adds no dependencies.
+resource "terraform_data" "apply_identity_guard" {
+  # Recorded in state so a change of operator identity is visible in the plan diff.
+  input = data.aws_caller_identity.current.arn
+
+  lifecycle {
+    precondition {
+      # strcontains on the role NAME, because an assumed-role ARN is
+      # sts::assumed-role/<name>/<session> and never string-equals the iam::role/<name> ARN in
+      # var.ci_role_arn — a naive == would never fire. No-ops when ci_role_arn is unset.
+      condition = !(var.ci_role_arn != "" && strcontains(
+        data.aws_caller_identity.current.arn,
+        reverse(split("/", var.ci_role_arn))[0]
+      ))
+      error_message = join(" ", [
+        "Refusing to run as the CI principal (${data.aws_caller_identity.current.arn}).",
+        "enable_cluster_creator_admin_permissions would replace the cluster_creator access entry",
+        "and revoke the human operator's cluster-admin. Run as your own IAM principal, or set",
+        "enable_cluster_creator_admin_permissions = false and declare admins explicitly in",
+        "access_entries first."
+      ])
+    }
   }
 }
 
