@@ -1,115 +1,94 @@
 # EKS Golden Platform
 
-Production-grade Amazon EKS platform built to the 2026 golden standard, delivered entirely via
-Infrastructure-as-Code and GitOps — with a documented cheap teardown/spin-up lifecycle so it costs
-~$0 when idle.
+Production-grade Amazon EKS platform delivered entirely through **Infrastructure-as-Code** and
+**GitOps** — with a documented teardown/rebuild lifecycle, so it costs **~$0 when idle**.
 
-**Stack:** EKS · Helm · ArgoCD · Prometheus · Grafana · Loki · Tempo · OpenTelemetry · Karpenter · RDS PostgreSQL
+[![terraform](https://github.com/c0debyeric/eks-golden-platform/actions/workflows/terraform.yml/badge.svg)](https://github.com/c0debyeric/eks-golden-platform/actions/workflows/terraform.yml)
+[![build-image](https://github.com/c0debyeric/eks-golden-platform/actions/workflows/build-image.yml/badge.svg)](https://github.com/c0debyeric/eks-golden-platform/actions/workflows/build-image.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Terraform](https://img.shields.io/badge/Terraform-%3E%3D1.15-7B42BC?logo=terraform&logoColor=white)
+![EKS](https://img.shields.io/badge/EKS-1.34-326CE5?logo=kubernetes&logoColor=white)
 
-![Architecture](docs/architecture.svg)
-
----
-
-## Architectural spine
+![Architecture](docs/diagram.svg)
 
 > **Terraform owns the disposable cluster; Git owns everything running on it.**
 
-1. **Terraform** provisions the platform (VPC with 3-tier subnets, EKS 1.34, Karpenter, Pod Identity
-   roles, managed add-ons, an optional RDS PostgreSQL data tier) and installs exactly one
-   application-layer thing: **ArgoCD**, plus a root app-of-apps manifest.
-2. **ArgoCD** then reconciles the *entire* workload layer from this Git repo — the AWS Load
-   Balancer Controller, External Secrets Operator, and the full observability stack — using
-   pinned upstream Helm charts and sync-wave ordering.
-3. Tear the cluster down with `make down` and the platform disappears (~$0). `make up` rebuilds it
-   and ArgoCD restores the whole stack from Git. State (S3) and telemetry data (Loki logs + Tempo
-   traces → S3) survive.
+Terraform provisions the platform and installs exactly one thing on top: **ArgoCD**. ArgoCD then
+reconciles the *entire* workload layer from this repo. Tear it all down with `make down` (~$0);
+`make up` rebuilds it and ArgoCD restores the stack from Git. State (S3) and telemetry data
+(Loki logs + Tempo traces → S3) survive.
 
-Design rationale and every version/decision is documented in [`docs/research/`](docs/research/RESEARCH.md).
+## Highlights
 
----
+- **One-command lifecycle** — `make up` provisions everything; `make down` returns you to ~$0.
+- **GitOps-native** — ArgoCD app-of-apps with sync-wave ordering; the whole workload layer is declarative.
+- **Full observability** — metrics, logs, and traces via OpenTelemetry → Prometheus, Loki, Tempo. Telemetry survives teardown (S3).
+- **Secure by default** — EKS Pod Identity, Access Entries (no `aws-auth`), External Secrets (public-repo-safe — only pointers in Git), IMDSv2, KMS-encrypted secrets, private nodes.
+- **Cost-tunable** — flip between production-HA and a cheap demo posture with tfvars only, no code changes.
+- **Optional data tier** — RDS PostgreSQL (Multi-AZ primary + read replicas) in an isolated, no-egress subnet tier.
+- **Sample workload** — an OpenTelemetry-instrumented [MCP backend](application/backend/README.md) that drops straight into the observability pipeline.
+- **Version currency enforced** — Renovate opens pin-bump PRs; a CI contract gate blocks chart bumps that would break at sync time.
+
+## Architecture
+
+1. **Terraform** provisions the platform — VPC with 3-tier subnets, EKS 1.34, Karpenter, Pod
+   Identity roles, managed add-ons, and an optional RDS PostgreSQL tier — then bootstraps **ArgoCD**
+   plus a root app-of-apps manifest.
+2. **ArgoCD** reconciles the workload layer from `gitops/`: AWS Load Balancer Controller,
+   External Secrets Operator, cert-manager, and the full observability stack — using pinned
+   upstream Helm charts and sync-wave ordering.
+3. **`make down`** destroys the cluster (~$0). **`make up`** rebuilds it and ArgoCD restores the
+   stack. Persistent state and telemetry live in S3 and survive.
+
+## Stack
+
+**Platform:** Terraform · `terraform-aws-modules/eks` · EKS 1.34 · Karpenter · EKS Pod Identity · Access Entries · RDS PostgreSQL
+
+**GitOps & workloads:** ArgoCD · Helm · AWS Load Balancer Controller · External Secrets Operator · cert-manager
+
+**Observability:** OpenTelemetry (Operator + Collector) · Prometheus · Grafana · Alertmanager · Loki (→ S3) · Tempo (→ S3)
+
+**Sample app:** Node.js 24 · TypeScript · Model Context Protocol SDK · Express 5
 
 ## Repository layout
 
 ```
 eks-golden-platform/
-├── Makefile                    # make up / down / status / argocd-ui
-├── renovate.json               # automated pin bumps (terraform + helm + argocd managers)
-├── scripts/
-│   └── crd_apiversion_gate.py  # CI gate: committed CR apiVersions must be SERVED by the pinned chart
-├── terraform/                  # PLATFORM layer (disposable cluster)
-│   ├── versions.tf             # provider pins (>= at current major, uniform) + S3 backend
-│   ├── variables.tf            # cost vs. HA knobs (single_nat, endpoint access, RDS, ci_role)
-│   ├── network.tf              # VPC + 3-tier subnets (public/private/database) + NAT + S3 endpoint
-│   ├── cluster.tf              # EKS control plane + managed add-ons + bootstrap node group + CI access entry
-│   ├── compute.tf              # Karpenter AWS side (node IAM role, SQS interruption queue)
-│   ├── iam.tf                  # Pod Identity roles (ALB ctrl, External Secrets, EBS CSI, Loki, Tempo)
-│   ├── storage.tf              # Loki S3 buckets (chunks + ruler) + Tempo traces bucket
-│   ├── rds.tf                  # PostgreSQL 18.4 — Multi-AZ primary + 2 read replicas (gated)
-│   ├── argocd.tf               # ArgoCD bootstrap + root app-of-apps (the handoff)
-│   ├── providers.tf            # aws/helm/kubernetes/kubectl (token exec, no kubeconfig)
-│   ├── outputs.tf
-│   ├── bootstrap/              # ONE-TIME: creates the S3 state bucket + GitHub OIDC CI role
-│   └── templates/root-app.yaml.tftpl
-├── gitops/                     # APPLICATION layer (GitOps, ArgoCD-managed)
-│   ├── bootstrap/              # one child Application per component (+ sync waves)
-│   └── apps/                   # Helm values + plain manifests per component
-└── docs/
-    ├── architecture.svg
-    └── research/               # golden-standard reference (READ THIS)
-        ├── RESEARCH.md         # index + BLUF + cross-file synthesis
-        ├── 01-eks-platform.md
-        ├── 02-gitops-argocd-helm.md
-        └── 03-observability.md
+├── Makefile                 # make up / down / status / argocd-ui / rds-info ...
+├── renovate.json            # automated pin bumps (terraform + helm + argocd)
+├── terraform/               # PLATFORM layer (disposable cluster)
+│   ├── network.tf           # VPC + 3-tier subnets (public/private/database)
+│   ├── cluster.tf           # EKS control plane + managed add-ons + bootstrap node group
+│   ├── compute.tf           # Karpenter AWS side (node IAM role, interruption queue)
+│   ├── iam.tf               # Pod Identity roles
+│   ├── storage.tf           # Loki + Tempo S3 buckets
+│   ├── rds.tf               # optional PostgreSQL (Multi-AZ + read replicas)
+│   ├── argocd.tf            # ArgoCD bootstrap + root app-of-apps (the handoff)
+│   └── bootstrap/           # ONE-TIME: S3 state bucket + GitHub OIDC CI role
+├── gitops/                  # APPLICATION layer (GitOps, ArgoCD-managed)
+│   ├── bootstrap/           # one child Application per component (+ sync waves)
+│   └── apps/                # Helm values + plain manifests per component
+├── application/
+│   └── backend/             # OpenTelemetry-instrumented MCP server (TypeScript)
+├── scripts/                 # CI gates (e.g. CRD apiVersion contract check)
+└── docs/                    # architecture diagram + research/reference
 ```
-
----
-
-## Golden-standard decisions (why each choice)
-
-| Layer | Decision | Why |
-|-------|----------|-----|
-| Cluster IaC | `terraform-aws-modules/eks ~> 21` | community standard; Karpenter + access-entries built in |
-| Compute | Karpenter v1.x, spot-first | cheapest steady state; NodePool/EC2NodeClass CRDs |
-| Identity | EKS **Pod Identity** | cluster-agnostic; survives teardown/rebuild (IRSA breaks) |
-| Cluster auth | **Access Entries API** | no `aws-auth` ConfigMap lockout risk |
-| NAT | one NAT **per AZ** (default) | full AZ-fault isolation; flip `single_nat_gateway=true` for ~$32/mo demo |
-| GitOps | ArgoCD **app-of-apps** + sync-waves | explicit single-cluster clarity; CRD-ordered installs |
-| Secrets | External Secrets Op + Pod Identity | **public-repo-safe** — only pointers in Git |
-| Metrics | kube-prometheus-stack 87.x | Operator + Prometheus + Grafana + Alertmanager |
-| Logs | Loki 3.x SingleBinary → S3 | cheap; logs survive teardown; native OTLP ingest |
-| Traces | Tempo monolithic → S3 | object-storage-native distributed tracing; traces survive teardown; OTLP ingest |
-| Chart source | **grafana-community/helm-charts** for Loki/Tempo | Grafana forked the OSS charts (2026-03); the old repo is Enterprise-only maintenance |
-| Secrets API | `external-secrets.io/v1` | ESO removed `v1beta1` serving 2026-05-01 |
-| Telemetry | OpenTelemetry Operator + Collector | unified metrics+logs+traces pipeline |
-| Data | RDS PostgreSQL 18.4, **Multi-AZ + 2 read replicas** | HA standby (failover) + read scaling; isolated NAT-less DB tier |
-| Network | 3-tier subnets (public/private/**database**) | database tier has no egress route — defense in depth |
-| CI | GitHub OIDC + AWS-layer `terraform plan` | keyless; CI role scoped to infra (GitOps-managed resources excluded) |
-
-*(This is the only markdown table in the repo — the research docs use ASCII/ranked lists for
-messaging-app legibility.)*
-
----
 
 ## Prerequisites
 
 - Terraform >= 1.15, AWS CLI v2, `kubectl`, `helm`
-- AWS credentials with permissions to create VPC/EKS/IAM (an admin-ish role)
-- **One-time bootstrap** (`terraform/bootstrap/`, run once with local state): creates the **S3 state
-  bucket** and the **GitHub OIDC role** for CI. State locking is **S3-native**
-  (`use_lockfile = true`, Terraform >= 1.11) — **no DynamoDB table**.
-- Loki's two S3 buckets (chunks + ruler) and Tempo's traces bucket are created by
-  `terraform/storage.tf` — no manual step.
-- A secret in AWS Secrets Manager at `eks-golden/grafana` with keys `admin-user`, `admin-password`
-  (resolved into the cluster by External Secrets Operator).
-- **Optional RDS** (`create_rds = true`): a self-managed master password is generated and stored in
-  Secrets Manager at `eks-golden/rds-master` automatically — no manual secret needed.
+- AWS credentials able to create VPC / EKS / IAM
+- **One-time bootstrap** (`terraform/bootstrap/`, run once with local state) — creates the S3
+  state bucket and the GitHub OIDC role for CI. State locking is S3-native (`use_lockfile`), no DynamoDB.
+- A secret in AWS Secrets Manager at `eks-golden/grafana` with keys `admin-user` and
+  `admin-password` (resolved into the cluster by External Secrets Operator).
 
 ## Quick start
 
 ```bash
 # 1. Configure backend + vars
 cp terraform/terraform.tfvars.example terraform/terraform.tfvars
-#   edit git_repo_url to your fork; create backend.hcl for the S3 backend
+#    edit git_repo_url to your fork; create backend.hcl for the S3 backend
 
 # 2. Init + validate
 make init
@@ -123,104 +102,73 @@ make status
 make argocd-ui          # https://localhost:8080
 make argocd-password    # initial admin password
 
-# 4b. (if create_rds=true) inspect the data tier
-make rds-info           # primary + replica endpoints, secret ARN
-make db-password        # RDS master password from Secrets Manager
-
-# 5. Tear it all down (~$0). S3 state + Loki chunks are retained.
+# 5. Tear it all down (~$0); S3 state + telemetry are retained
 make down
 ```
+
+Run `make help` to see all targets.
+
+## Configuration
+
+The platform **defaults to a production-HA posture**. Switch to a cheap demo posture entirely
+through `terraform.tfvars` — no code changes:
+
+```hcl
+single_nat_gateway     = true    # one shared NAT (~$32/mo) instead of one per AZ
+create_rds             = false   # skip the database tier
+endpoint_public_access = true    # public API endpoint (set false + SSM/bastion to harden)
+```
+
+Set `create_rds = true` to provision PostgreSQL (Multi-AZ primary + 2 read replicas) in the
+isolated database subnet tier, which has **no NAT route** — the DB physically cannot egress to the
+internet. The master password is generated and stored in Secrets Manager at `eks-golden/rds-master`;
+inspect endpoints with `make rds-info`.
 
 ## Cost
 
 ```
-EKS control plane        ~$73/mo   (fixed, per cluster)
-NAT gateways (per-AZ x3)  ~$97/mo   (+ data processing) — default production posture
-2x t3.medium bootstrap   ~$30/mo   (spot-eligible via Karpenter for workloads)
-EBS + S3                 ~$6-20/mo
-RDS (opt-in, create_rds) ~$50/mo   Multi-AZ primary + 2 read replicas (db.t4g.micro)
------------------------------------
-Production floor          ~$200-240/mo   ->   make down -> ~$0
-Demo floor (single NAT,   ~$110-140/mo   set single_nat_gateway=true, create_rds=false
-  no RDS)
+Production floor  ~$200–240/mo   (per-AZ NAT, EKS control plane, bootstrap nodes)
+Demo floor        ~$110–140/mo   (single_nat_gateway=true, create_rds=false)
+Idle              ~$0            (make down)
 ```
 
-⚠️ **Keep `kubernetes_version` current.** Falling into EKS *extended support* raises the control
-plane to ~$438/mo. See [`docs/research/01-eks-platform.md`](docs/research/01-eks-platform.md) §7.
+> **Keep `kubernetes_version` current.** Falling into EKS *extended support* raises the control
+> plane from ~$73/mo to ~$438/mo. Upgrade one minor at a time, control plane before charts.
+> See [`docs/research/01-eks-platform.md`](docs/research/01-eks-platform.md).
 
-## Version currency
+## Sample application — MCP backend
 
-Pins rot, and the expensive ones rot **silently** — a stale cluster minor throws no error, it just
-re-prices the control plane. Two mechanisms keep this repo honest so the drift never has to be
-found by hand again:
+`application/backend/` is a small, production-shaped **[Model Context Protocol](https://modelcontextprotocol.io)**
+server (TypeScript, Streamable HTTP, stateless) wired into the platform's OpenTelemetry pipeline —
+traces → Tempo, metrics → Prometheus, logs → Loki. ArgoCD deploys it at sync wave 5, after the
+observability stack. See [`application/backend/README.md`](application/backend/README.md) for local
+dev, configuration, and the image build/deploy flow.
 
-- **Renovate** (`renovate.json`) watches the Terraform modules, the Helm charts pinned in
-  `gitops/bootstrap/*.yaml` (via the `argocd` manager), *and* the EKS minor — which lives in a
-  Terraform variable default where no standard manager would see it. Platform-critical controllers
-  get their own PRs; the observability charts are grouped.
-- **`gitops-contract` CI job** renders every pinned chart against its committed values and asserts
-  each committed CR's `apiVersion` is actually **served** by that chart
-  (`scripts/crd_apiversion_gate.py`). This catches the failure that otherwise appears only at sync
-  time as ArgoCD's opaque `one or more synchronization tasks are not valid`.
+## CI/CD
 
-Current standard-support deadline to watch: **EKS 1.34 → 2026-12-02**. Upgrade one minor at a time,
-control plane before charts.
+All workflows are **keyless** — GitHub Actions assumes an AWS role via OIDC ([`docs/OIDC-SETUP.md`](docs/OIDC-SETUP.md)); no static credentials are stored.
 
-## Security & public-repo safety
+- **`terraform`** — `fmt` + `validate` on every PR; a **GitOps contract** gate renders each pinned
+  chart against its committed values and asserts every committed CR's `apiVersion` is actually
+  served by that chart; a scoped `terraform plan` runs on `main`.
+- **`build-image`** — builds and pushes the MCP backend image to ECR (immutable, SHA-tagged) on
+  changes under `application/backend/`.
+
+## Documentation
+
+- [`docs/research/RESEARCH.md`](docs/research/RESEARCH.md) — design rationale and every version/decision
+- [`docs/NETWORK-ARCHITECTURE.md`](docs/NETWORK-ARCHITECTURE.md) — VPC 3-tier subnet layout
+- [`docs/OIDC-SETUP.md`](docs/OIDC-SETUP.md) — keyless GitHub Actions → AWS OIDC
+- [`docs/TEARDOWN-GOTCHAS.md`](docs/TEARDOWN-GOTCHAS.md) — teardown & state-lock operational notes
+
+## Security
 
 - No secret values in Git — External Secrets Operator commits only *pointers* to AWS Secrets
   Manager, resolved at runtime via Pod Identity.
 - `.gitignore` blocks `*.tfstate*`, `*.tfvars`, `kubeconfig*`, `*.pem`, `.env`.
-- IMDSv2 required on all nodes (`http_tokens=required`, hop limit 1); KMS-encrypted K8s secrets;
-  nodes in private subnets; Access Entries instead of `aws-auth`.
-
-## Production vs. portfolio posture
-
-This repo **defaults to the production HA posture** (one NAT per AZ, isolated database subnet tier).
-Flip to the **cheap portfolio/demo** posture with tfvars, no code changes:
-
-```hcl
-single_nat_gateway     = true    # one shared NAT (~$32/mo) — single-AZ egress SPOF
-create_rds             = false   # skip the ~$50/mo database tier entirely
-endpoint_public_access = true    # public API endpoint (set false + SSM/bastion to harden)
-```
-
-For the hardened production endpoint, set `endpoint_public_access = false` and reach the API via
-SSM Session Manager or a bastion.
-
-## Data tier (optional)
-
-Set `create_rds = true` to provision PostgreSQL 18.4 in the **isolated database subnet tier** (no
-NAT route — the DB physically cannot egress to the internet):
-
-- **Multi-AZ primary** — synchronous standby in a second AZ for automatic failover (HA, *not*
-  readable).
-- **2 read replicas** — asynchronous, in separate AZs, for read scaling (readable).
-
-The master password is generated locally and stored in Secrets Manager at `eks-golden/rds-master`.
-The RDS security group only accepts `:5432` from the EKS node security group. Endpoints are exposed
-as Terraform outputs (`rds_primary_endpoint`, `rds_replica_endpoints`, `rds_master_secret_arn`).
-
-> **Note:** RDS-managed master passwords are *incompatible* with Postgres read replicas, so the
-> password is self-managed (`password_wo` + a Terraform-owned Secrets Manager secret).
-
-## CI (GitHub Actions)
-
-- **Keyless** — the workflow assumes `AWS_ROLE_ARN` via GitHub OIDC (no static keys in the repo).
-- **`lint` job**: `terraform fmt -check` + `validate` (no cloud calls).
-- **`gitops-contract` job**: renders each pinned Helm chart against its committed values and runs
-  `scripts/crd_apiversion_gate.py` to assert every committed CR's `apiVersion` is served by that
-  chart. No cloud calls, so it runs on PRs. Chart versions are parsed out of the Application
-  manifests, so the job can't drift from the pins it validates.
-- **`plan` job**: OIDC assume → `terraform plan` **scoped to the AWS-infra layer** via `-target`
-  (VPC/EKS/Karpenter/IAM/S3). GitOps-managed resources (Helm/ArgoCD CRDs) and the gated RDS module
-  are excluded — the CI role stays least-privilege and the plan doesn't show false teardowns of
-  resources it isn't allowed to read. Runs with `-lock=false` to avoid contending with local applies.
+- IMDSv2 required on all nodes, KMS-encrypted Kubernetes secrets, nodes in private subnets, and
+  Access Entries instead of the `aws-auth` ConfigMap.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
----
-*Built as a portfolio reference for the 2026 EKS golden standard. Research + decisions in
-[`docs/research/`](docs/research/RESEARCH.md).*
