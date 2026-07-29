@@ -9,28 +9,23 @@
 # stage auto-syncs, prod does not.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-
 namespace: mcp-stage
-
 resources:
   - ../../base
-
 labels:
   - includeSelectors: false
     pairs:
       app.kubernetes.io/instance: mcp-backend-stage
       environment: stage
-
 # Rewritten by the promotion workflow when a dev digest is promoted to stage.
 images:
   - name: PLACEHOLDER_IMAGE
     newName: 810749429738.dkr.ecr.us-east-1.amazonaws.com/mcp-backend
-    newTag: stage-bootstrap
-
+    newTag: a7b96ed603df
+    digest: sha256:feeeae5e3c0764a2d79f34bbac1150c568a0f0e93c102f01d341b2631bd75761
 replicas:
   - name: mcp-backend
     count: 2
-
 patches:
   # Env-specific telemetry identity — keyed by env NAME, not list index, so a reorder in
   # the base cannot silently retarget the wrong variable.
