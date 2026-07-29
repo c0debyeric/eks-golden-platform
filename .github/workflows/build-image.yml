@@ -16,6 +16,20 @@ on:
       - ".github/workflows/build-image.yml"
   workflow_dispatch: {}
 
+# Serialise runs per commit. WHY: the tag is the 12-char git SHA and ECR tags are
+# IMMUTABLE, so two concurrent runs for the same commit (e.g. a push plus a manual
+# workflow_dispatch, which is exactly what happened on 2026-07-29) both pass the
+# "does this tag exist yet" check, both build, and the loser dies with:
+#   failed to push ...: The image tag 'a7b96ed603df' already exists ... and cannot be
+#   overwritten because the tag is immutable
+# That reads like a workflow bug but is really a race. cancel-in-progress is deliberately
+# FALSE: the in-flight run may already have pushed, and cancelling it mid-push would leave
+# a partially-exported manifest. Queueing lets the second run reach the existence check
+# and skip cleanly instead.
+concurrency:
+  group: build-image-${{ github.sha }}
+  cancel-in-progress: false
+
 # Required for OIDC (id-token), checkout (contents), and the automated dev-pin PR.
 # contents: write + pull-requests: write are needed by create-pull-request to push the
 # deploy/dev-* branch and open the PR. Still no packages: write -- the image goes to ECR
