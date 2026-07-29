@@ -26,8 +26,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TF_VERSION }}
       - name: terraform fmt
@@ -49,9 +49,9 @@ jobs:
   gitops-contract:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
 
       - name: Install PyYAML
         run: pip install --quiet pyyaml
@@ -125,11 +125,11 @@ jobs:
     needs: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Exchanges the GitHub OIDC token for short-lived AWS creds. No secrets stored.
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }} # repo variable, set from bootstrap output
           aws-region: ${{ env.AWS_REGION }}
@@ -138,7 +138,7 @@ jobs:
       - name: Verify identity
         run: aws sts get-caller-identity
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
@@ -161,8 +161,15 @@ jobs:
         #      gitignored tfvars, so a full plan shows a spurious RDS teardown.
         # -lock=false: a read-only plan must not acquire the S3 state lock (else it races/blocks
         # any concurrent `terraform apply` with a 412 PreconditionFailed).
+        #
+        # -var ci_role_arn: WITHOUT this, CI plans with the variable at its "" default, so
+        # `access_entries` evaluates to {} and every plan reports a FALSE teardown of the CI
+        # access entry ("key [ci] is not in for_each map") plus its policy association. A plan
+        # that cries wolf on every PR trains reviewers to ignore it, which defeats the job.
+        # Passing the same ARN the job just assumed makes the plan honest.
         run: |
           terraform -chdir=terraform plan -input=false -no-color -lock=false \
+            -var="ci_role_arn=${{ vars.AWS_ROLE_ARN }}" \
             -target=module.vpc \
             -target=module.eks \
             -target=module.karpenter \

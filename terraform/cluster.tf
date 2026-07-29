@@ -9,8 +9,22 @@ module "eks" {
   name               = var.name
   kubernetes_version = var.kubernetes_version
 
-  endpoint_public_access                   = var.endpoint_public_access
-  enable_cluster_creator_admin_permissions = true # Access Entries: add caller as admin
+  endpoint_public_access = var.endpoint_public_access
+
+  # DANGER — this derives cluster-admin from WHOEVER RUNS `terraform apply`, not from a fixed
+  # principal. The module reads the caller identity at apply time and writes it as the
+  # "cluster_creator" access entry. Consequences to understand before you apply from anywhere new:
+  #
+  #   * Applying from a DIFFERENT identity than the original creator REPLACES that entry
+  #     (principal_arn forces replacement) and REVOKES the previous admin's kubectl access.
+  #   * Applying from CI would therefore hand cluster-admin to the GitHub Actions OIDC role and
+  #     lock the human operator out — which is exactly why this repo's CI is plan-only and the
+  #     `plan` job is scoped with -target. Never add an `apply` job to CI while this is true.
+  #
+  # This is safe as-is for a single-operator platform. If this ever becomes a team cluster, set
+  # this to false and declare admins EXPLICITLY as access_entries below, so admin identity is
+  # reviewable in Git instead of being a side effect of who ran the last apply.
+  enable_cluster_creator_admin_permissions = true
 
   # Grant the CI runner (GitHub Actions OIDC role) a READ-ONLY access entry so `terraform plan`
   # in CI can authenticate to the K8s API and refresh in-cluster resources (helm_release,
