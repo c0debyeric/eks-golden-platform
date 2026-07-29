@@ -14,7 +14,12 @@ spec:
   sources:
     - repoURL: https://open-telemetry.github.io/opentelemetry-helm-charts
       chart: opentelemetry-operator
-      targetRevision: 0.90.4
+      # 0.120.0 (operator app 0.156.0). Stays well clear of the old chart versions that
+      # shipped the kube-rbac-proxy sidecar which created -- but never reconciled -- its own
+      # ServiceMonitor, permanently CrashLooping the manager with "servicemonitors ...
+      # already exists" after any restart. values.yaml also pins
+      # manager.serviceMonitor.enabled=false as belt-and-braces against that.
+      targetRevision: 0.120.0
       helm:
         valueFiles:
           - $values/gitops/apps/otel-operator/values.yaml

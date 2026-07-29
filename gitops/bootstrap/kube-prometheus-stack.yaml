@@ -13,7 +13,9 @@ spec:
   sources:
     - repoURL: https://prometheus-community.github.io/helm-charts
       chart: kube-prometheus-stack
-      targetRevision: 87.16.1
+      # Routine drift only (87.16.1 -> 87.21.0, same major). Kept current so the
+      # Prometheus Operator CRDs match what our ServiceMonitors/PodMonitors expect.
+      targetRevision: 87.21.0
       helm:
         valueFiles:
           - $values/gitops/apps/kube-prometheus-stack/values.yaml
