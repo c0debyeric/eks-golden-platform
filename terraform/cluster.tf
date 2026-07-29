@@ -2,6 +2,41 @@
 # node group that exists only to host Karpenter + core controllers. Actual workload
 # capacity is provisioned by Karpenter (see compute.tf), not by a static node group.
 
+# Who is actually running Terraform right now. Used ONLY by the guard below.
+data "aws_caller_identity" "current" {}
+
+# GUARD: refuse to apply as the CI role.
+#
+# enable_cluster_creator_admin_permissions (below) derives cluster-admin from the caller
+# identity AT APPLY TIME. An apply from CI therefore REPLACES the cluster_creator access entry,
+# handing cluster-admin to the GitHub Actions OIDC role and REVOKING the human operator's
+# kubectl access. That is unrecoverable without a second admin principal.
+#
+# CI is plan-only today, so this can't happen by accident — but "CI is plan-only" is a
+# convention, and conventions get changed by a future PR that adds an apply job. This turns the
+# convention into an enforced invariant: the apply FAILS FAST with an actionable message instead
+# of silently stealing admin. Costs one STS call; catches a class of outage.
+#
+# Deliberately a check block (not a precondition on the module) so it evaluates on plan too,
+# surfacing the problem in CI review output rather than only at apply time.
+check "apply_identity_is_not_ci" {
+  assert {
+    condition = var.ci_role_arn == "" || !strcontains(
+      data.aws_caller_identity.current.arn,
+      # Compare on the role NAME, since an assumed-role ARN is sts::assumed-role/<name>/<session>
+      # and never string-equals the iam::role/<name> ARN in var.ci_role_arn.
+      reverse(split("/", var.ci_role_arn))[0]
+    )
+    error_message = join(" ", [
+      "Refusing to run as the CI principal (${data.aws_caller_identity.current.arn}).",
+      "enable_cluster_creator_admin_permissions would replace the cluster_creator access entry",
+      "and revoke the human operator's cluster-admin. Run apply as your own IAM principal, or",
+      "set enable_cluster_creator_admin_permissions = false and declare admins explicitly in",
+      "access_entries first."
+    ])
+  }
+}
+
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
   version = ">= 21.0"
