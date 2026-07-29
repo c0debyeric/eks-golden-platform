@@ -18,10 +18,23 @@ variable "kubernetes_version" {
   description = <<-EOT
     EKS control-plane Kubernetes version. Keep this CURRENT — letting it drift into EKS
     extended support raises the control plane from ~$73/mo to ~$438/mo (the "extended support trap").
+
+    Standard-support calendar (verified against the AWS EKS version lifecycle docs, 2026-07-29):
+      1.33  standard support ENDED 2026-07-29  <- what this repo was pinned to
+      1.34  standard support ends  2026-12-02  <- current pin
+      1.35  standard support ends  2027-03-27
+      1.36  standard support ends  2027-08-02
+
+    Upgrade ONE minor at a time (EKS refuses multi-minor control-plane jumps), and bump the
+    control plane BEFORE the workload charts — several charts (cert-manager, EBS CSI sidecars)
+    have floors tied to the cluster minor, so charts-first fails in ways that look like chart bugs.
+
+    Known ceiling to plan for: k8s 1.35 is the LAST release supporting containerd 1.x, so nodes
+    must be on containerd 2.0+ before hopping past 1.35.
   EOT
   type        = string
   # renovate: datasource=endoflife-date depName=amazon-eks
-  default = "1.33"
+  default = "1.34"
 }
 
 variable "vpc_cidr" {
