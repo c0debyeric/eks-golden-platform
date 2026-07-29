@@ -11,9 +11,19 @@ metadata:
 spec:
   project: default
   sources:
-    - repoURL: https://grafana.github.io/helm-charts
+    - repoURL: https://grafana-community.github.io/helm-charts
       chart: loki
-      targetRevision: 6.24.0
+      # Repo RELOCATION, not just a bump: Grafana forked the OSS Loki chart to
+      # grafana-community/helm-charts on 2026-03-16 (forked at chart 6.55.0). The old
+      # grafana.github.io copy still resolves — so nothing errors — but it is now maintained
+      # for Grafana Enterprise Logs only, meaning OSS security/bug fixes silently stop arriving.
+      # That makes staying put a no-error failure mode.
+      #
+      # 6.24.0 -> 18.7.0 is a version-namespace RENUMBER across the fork, NOT 12 majors of
+      # breaking upgrades. Verified by rendering this exact chart against our unchanged
+      # values.yaml: every key (deploymentMode, singleBinary, gateway, schemaConfig, ...)
+      # still resolves.
+      targetRevision: 18.7.0
       helm:
         valueFiles:
           - $values/gitops/apps/loki/values.yaml

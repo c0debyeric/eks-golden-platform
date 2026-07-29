@@ -15,9 +15,16 @@ spec:
   # Multi-source: pull the upstream chart, feed it our in-repo values.yaml via the $values ref
   # (identical pattern to loki.yaml so the repo URL isn't duplicated inside the values path).
   sources:
-    - repoURL: https://grafana.github.io/helm-charts
+    - repoURL: https://grafana-community.github.io/helm-charts
       chart: tempo
-      targetRevision: 1.24.4
+      # Same repo relocation as loki.yaml: the OSS chart now lives in
+      # grafana-community/helm-charts; the grafana.github.io copy is Enterprise-only
+      # maintenance mode and silently stops receiving OSS fixes.
+      #
+      # 2.2.3 ships Tempo app 2.10.7 (vs app 2.x on the old pinned chart 1.24.4). Verified by
+      # rendering this chart against our unchanged values.yaml — tempo.storage.trace.s3,
+      # receivers.otlp, persistence and serviceAccount keys all still resolve.
+      targetRevision: 2.2.3
       helm:
         valueFiles:
           - $values/gitops/apps/tempo/values.yaml
