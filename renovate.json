@@ -1,0 +1,80 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard"
+  ],
+  "timezone": "America/Chicago",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 5,
+  "labels": ["dependencies"],
+
+  "//": "WHY this file exists: on 2026-07-29 a hand audit found SEVEN stale pins, including an EKS minor whose standard-support lapse silently 6x'd the control-plane bill and an External Secrets chart whose apiVersion had stopped being served. Every one of those would have arrived here as a PR months earlier. Renovate is the permanent fix for the class of problem; the audit was the symptom.",
+
+  "helm-values": { "enabled": true },
+  "terraform": { "enabled": true },
+
+  "argocd": {
+    "//": "ArgoCD Application manifests carry chart pins in spec.sources[].targetRevision. Renovate's argocd manager reads those, which is where MOST of this repo's version surface lives.",
+    "enabled": true,
+    "fileMatch": ["gitops/bootstrap/.+\\.yaml$"]
+  },
+
+  "packageRules": [
+    {
+      "//": "Group the observability stack. These charts are co-deployed and cross-reference each other's Services (loki-gateway, tempo:4317) and Grafana datasources, so reviewing them together beats seven isolated PRs.",
+      "groupName": "observability stack",
+      "matchPackageNames": [
+        "loki",
+        "tempo",
+        "kube-prometheus-stack",
+        "opentelemetry-operator"
+      ]
+    },
+    {
+      "//": "Platform-critical controllers get their OWN PRs, never grouped. A bad bump to any of these can take the whole cluster down (the ALB controller's Service webhook blocks every Service create cluster-wide when it CrashLoops), so each must be revertible in isolation.",
+      "matchPackageNames": [
+        "karpenter",
+        "aws-load-balancer-controller",
+        "external-secrets",
+        "cert-manager",
+        "argo-cd"
+      ],
+      "groupName": null,
+      "labels": ["dependencies", "platform-critical"]
+    },
+    {
+      "//": "External Secrets majors have a history of removing served CRD apiVersions (v1beta1 dropped 2026-05-01). A major bump here REQUIRES a paired manifest rewrite, so flag it loudly rather than letting it look routine.",
+      "matchPackageNames": ["external-secrets"],
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["breaking-change-review"],
+      "prBodyNotes": [
+        ":warning: **Check served CRD apiVersions before merging.** ESO majors have removed apiVersion serving before. Run `scripts/crd_apiversion_gate.py` against the new chart — if `external-secrets.io/v1...` shows `served=false`, the manifests in `gitops/apps/external-secrets/` must be migrated in the SAME commit or ArgoCD fails with the opaque 'one or more synchronization tasks are not valid'."
+      ]
+    },
+    {
+      "//": "Terraform module majors (notably terraform-aws-modules/eks v20->v21) rename variables wholesale. Never auto-merge; always read the UPGRADE guide.",
+      "matchManagers": ["terraform"],
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["breaking-change-review"]
+    },
+    {
+      "//": "Digest/patch churn on the same chart line is noise; batch it weekly.",
+      "matchUpdateTypes": ["patch", "pin", "digest"],
+      "groupName": "patch updates",
+      "automerge": false
+    }
+  ],
+
+  "customManagers": [
+    {
+      "//": "The EKS Kubernetes minor lives in a Terraform variable DEFAULT, not a module pin, so no standard manager sees it -- which is precisely why 1.33 rotted past its standard-support date unnoticed. This regex manager tracks it against the EKS-supported releases so the next support deadline arrives as a PR instead of a surprise bill.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^terraform/variables\\.tf$/"],
+      "matchStrings": [
+        "#\\s*renovate:\\s*datasource=(?<datasource>.*?) depName=(?<depName>.*?)\\s*\\n\\s*default\\s*=\\s*\"(?<currentValue>[\\d.]+)\""
+      ],
+      "versioningTemplate": "loose"
+    }
+  ]
+}

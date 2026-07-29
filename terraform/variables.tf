@@ -20,7 +20,8 @@ variable "kubernetes_version" {
     extended support raises the control plane from ~$73/mo to ~$438/mo (the "extended support trap").
   EOT
   type        = string
-  default     = "1.33"
+  # renovate: datasource=endoflife-date depName=amazon-eks
+  default = "1.33"
 }
 
 variable "vpc_cidr" {
