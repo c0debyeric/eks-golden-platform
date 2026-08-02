@@ -20,6 +20,17 @@ metadata:
 spec:
   mode: daemonset
   serviceAccount: otel-collector       # see rbac.yaml — k8sattributes needs API read access
+  # A DaemonSet cannot make room for itself. Karpenter deliberately does NOT provision a node to
+  # host a new DaemonSet pod (the only pod that would land on it is the DaemonSet itself), so on a
+  # node that is already at its max-pods limit this pod simply stays Pending forever — and that
+  # node becomes a silent logging blind spot while the DaemonSet reports "3/4 ready".
+  # Observed exactly that on first deploy: an m8g.medium at 8/8 pods.
+  #
+  # Karpenter's documented answer is to give node-level agents a high priority so they preempt a
+  # lower-priority pod; the evicted pod goes Pending, which Karpenter DOES provision for. Net
+  # effect: log collection is guaranteed on every node, and the displaced workload is rescheduled
+  # onto new capacity. See rbac.yaml for the PriorityClass definition.
+  priorityClassName: platform-node-agent
   resources:
     requests: { cpu: 50m, memory: 128Mi }
     limits: { memory: 256Mi }

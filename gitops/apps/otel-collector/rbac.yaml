@@ -51,3 +51,27 @@ subjects:
   - kind: ServiceAccount
     name: otel-collector
     namespace: observability
+---
+# Priority for node-level agents (the logs DaemonSet). Without this the collector cannot schedule
+# onto a node that is already at its max-pods limit, leaving that node with no log collection at
+# all while everything reports healthy.
+#
+# WHY NOT system-node-critical: that tier (2000001000) is reserved for components whose loss
+# breaks the node itself — the CNI, kube-proxy, the CSI driver. Log collection is important but
+# it is not in that class, and borrowing that priority would let it evict the very components it
+# depends on to ship data. This value sits well above every application workload (which default
+# to 0) and safely below both system tiers.
+#
+# preemptionPolicy PreemptLowerPriority is the default and is stated explicitly here because it,
+# not the value, is the part that actually does the work.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: platform-node-agent
+value: 1000000000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: >-
+  Node-level platform agents (OTel logs DaemonSet). High enough to preempt application pods on a
+  saturated node so every node has log collection; below system-cluster-critical and
+  system-node-critical so it can never evict the CNI, kube-proxy or CSI drivers.

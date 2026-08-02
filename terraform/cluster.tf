@@ -98,12 +98,32 @@ module "eks" {
 
   # AWS-owned cluster plumbing as managed add-ons; the module orders CNI before compute.
   addons = {
-    coredns                = {}
-    kube-proxy             = {}
-    vpc-cni                = { before_compute = true } # ready before nodes join
-    aws-ebs-csi-driver     = {}                        # PVCs for Prometheus/Loki/Grafana
-    eks-pod-identity-agent = {}                        # REQUIRED for Pod Identity
-    metrics-server         = {}                        # HPA + kubectl top
+    coredns    = {}
+    kube-proxy = {}
+    # before_compute: ready before nodes join.
+    #
+    # PREFIX DELEGATION: without it, max-pods is derived from ENI IP slots, which is brutal on the
+    # small instances this NodePool prefers — an m8g.medium gets max-pods=8. Five platform
+    # DaemonSets (CNI, kube-proxy, pod-identity-agent, ebs-csi-node, node-exporter) consume most
+    # of that, so the node can host 2-3 workload pods and cannot fit a sixth DaemonSet at all.
+    # That is how the OTel logs collector ended up permanently Pending on one node.
+    #
+    # Prefix delegation assigns /28 prefixes instead of individual IPs, raising the same instance
+    # to ~98 pods. NOTE: max-pods is fixed at node bootstrap, so this only affects nodes created
+    # AFTER it is applied — existing nodes must be recycled. Karpenter does not read this setting
+    # either; its density is set explicitly via kubelet.maxPods in the EC2NodeClass.
+    vpc-cni = {
+      before_compute = true
+      configuration_values = jsonencode({
+        env = {
+          ENABLE_PREFIX_DELEGATION = "true"
+          WARM_PREFIX_TARGET       = "1"
+        }
+      })
+    }
+    aws-ebs-csi-driver     = {} # PVCs for Prometheus/Loki/Grafana
+    eks-pod-identity-agent = {} # REQUIRED for Pod Identity
+    metrics-server         = {} # HPA + kubectl top
   }
 
   # A tiny managed node group ONLY to host Karpenter + core controllers.

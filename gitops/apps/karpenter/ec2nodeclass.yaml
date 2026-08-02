@@ -9,6 +9,18 @@ spec:
   amiSelectorTerms:
     - alias: al2023@latest
   role: eks-golden-karpenter       # stable node role name pinned in module.karpenter (main.tf)
+  # Karpenter does NOT read the VPC CNI's ENABLE_PREFIX_DELEGATION setting. Left unset it derives
+  # max-pods from raw ENI IP slots, which on the small instances this NodePool prefers means
+  # max-pods=8 on an m8g.medium — not even enough for the platform's own DaemonSets, and the
+  # reason the OTel logs collector could not schedule on one node. Prefix delegation (enabled on
+  # the vpc-cni addon in terraform/cluster.tf) raises the real ceiling to ~98 for that instance;
+  # this tells Karpenter it may use it.
+  #
+  # 44 rather than the usual 110: it clears the ceiling for every instance type this NodePool can
+  # pick while staying conservative on 1-2 vCPU nodes, where kubelet and container runtime
+  # overhead — not IP addresses — become the real limit.
+  kubelet:
+    maxPods: 44
   subnetSelectorTerms:
     - tags:
         karpenter.sh/discovery: eks-golden
