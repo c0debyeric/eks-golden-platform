@@ -1,5 +1,28 @@
 # kube-prometheus-stack values — tuned for a cost-conscious portfolio cluster.
 # Levers: short retention + capped disk + modest requests + remoteWrite OFF (no managed-TSDB bill).
+
+# EKS RUNS THE CONTROL PLANE, SO THESE THREE CANNOT BE SCRAPED.
+# The chart assumes a self-managed control plane and ships a ServiceMonitor plus alert rules for
+# each. On EKS the components run inside AWS's managed control plane and expose no endpoint to
+# the cluster, so each Service has ZERO endpoints and Prometheus discovers no targets at all.
+# The rules alert on absence -- absent(up{job=...}) -- so they fire permanently and can never
+# clear:
+#     KubeControllerManagerDown  severity=critical
+#     KubeSchedulerDown          severity=critical
+# Two CRITICAL alerts that are always firing is worse than no alerting: it makes "something is
+# critical" the resting state, so a real page is indistinguishable from the background and the
+# channel gets muted. Verified before disabling -- each had endpoints=[] and 0 scrape targets.
+#
+# kubeProxy is deliberately NOT in this list. It genuinely works here (kube-proxy runs as a
+# DaemonSet on the nodes, not in the managed control plane) and had 3 healthy targets, so
+# disabling it would lose real signal.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+
 prometheus:
   prometheusSpec:
     retention: 7d
