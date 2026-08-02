@@ -112,6 +112,14 @@ module "eks" {
     #     gitops/apps/karpenter/ec2nodeclass.yaml -- this is not hypothetical).
     # It needs a planned rollout: enable, verify on the live DaemonSet, recycle, then raise
     # maxPods. Until then the logs DaemonSet's PriorityClass is what guarantees coverage.
+    #
+    # Apply this addon on its own with an EXPLICIT plan file, never an ad-hoc -target:
+    #   terraform plan  -target='module.eks.aws_eks_addon.this["vpc-cni"]' -out=cni.tfplan
+    #   terraform apply cni.tfplan
+    # A plan file makes the blast radius reviewable before it executes. The 2026-08-02 outage
+    # began because a shell line-continuation had a trailing space, so -target silently never
+    # reached terraform and an intended one-resource change ran as a full auto-approved apply,
+    # rolling the bootstrap node group's AMI as a side effect.
     vpc-cni                = { before_compute = true }
     aws-ebs-csi-driver     = {} # PVCs for Prometheus/Loki/Grafana
     eks-pod-identity-agent = {} # REQUIRED for Pod Identity
