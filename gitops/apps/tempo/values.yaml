@@ -32,12 +32,53 @@ tempo:
         http:
           endpoint: 0.0.0.0:4318
 
+  # Turns traces into metrics. This is what produces the RED series behind Grafana's
+  # `tracesToMetrics` link and the service map / node graph on the Tempo datasource
+  # (gitops/apps/kube-prometheus-stack/values.yaml). Without it those panels are permanently
+  # empty and every span is a dead end — you can read one request but never aggregate them.
+  #
+  # The generator writes to Prometheus over remote-write, so it depends on
+  # prometheus.prometheusSpec.enableRemoteWriteReceiver being on. If that flag ever goes back to
+  # false this silently 404s and the service map goes blank.
+  metricsGenerator:
+    enabled: true
+    remoteWriteUrl: http://prometheus-operated.monitoring.svc:9090/api/v1/write
+    registry:
+      collection_interval: 15s
+      external_labels:
+        source: tempo
+    processor:
+      service_graphs:
+        wait: 10s
+      span_metrics:
+        # target_info carries the service's resource attributes as a companion series so panels
+        # can join on env/namespace instead of guessing from the service name.
+        enable_target_info: true
+    storage:
+      # Chart default is /tmp/tempo, which is a container-lifetime scratch dir. Point it at the
+      # gp3 PVC mounted at /var/tempo so an un-flushed WAL survives a pod restart.
+      path: /var/tempo/generator/wal
+    traces_storage:
+      path: /var/tempo/generator/traces
+
   resources:
     requests: { cpu: 100m, memory: 256Mi }
-    limits: { memory: 512Mi }
+    # Raised from 512Mi: the metrics-generator keeps an in-memory registry of active series and
+    # a traces WAL, both of which are additive to the ingester's footprint.
+    limits: { memory: 1Gi }
 
   # Anonymous usage reporting off for a private portfolio cluster.
   reportingEnabled: false
+
+  # Per-tenant switch that actually ARMS the generator. metricsGenerator.enabled above only
+  # deploys and configures the component; without these processors listed for the default tenant
+  # it starts up healthy and produces nothing. Two settings, one feature — easy to half-enable.
+  overrides:
+    defaults:
+      metrics_generator:
+        processors:
+          - service-graphs
+          - span-metrics
 
 # ServiceAccount that Tempo's S3 access binds to. Pod Identity targets this exact
 # namespace/name pair (tracing/tempo) — must match aws_eks_pod_identity_association.tempo.
@@ -54,3 +95,9 @@ persistence:
 
 # Single replica — monolithic mode for a lean portfolio stack.
 replicas: 1
+
+# Scrape Tempo's own metrics (ingest rate, generator health, S3 flush errors). Selected only
+# because kube-prometheus-stack sets serviceMonitorSelectorNilUsesHelmValues: false — Tempo runs
+# in the `tracing` namespace and cannot carry that chart's release label.
+serviceMonitor:
+  enabled: true

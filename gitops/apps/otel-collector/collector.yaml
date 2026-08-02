@@ -1,6 +1,10 @@
 # OpenTelemetry Collector — gateway (Deployment) that receives OTLP from apps and fans out:
 #   metrics -> Prometheus (remote-write), logs -> Loki native OTLP endpoint (otlphttp),
 #   traces  -> Tempo (OTLP gRPC).
+#
+# Two producers feed this collector: the application SDK (traces + metrics, pushed straight from
+# the pod) and the per-node logs DaemonSet (logs-daemonset.yaml). Keeping a single gateway means
+# exactly one place in the repo knows where each backend lives.
 apiVersion: opentelemetry.io/v1beta1
 kind: OpenTelemetryCollector
 metadata:
@@ -9,44 +13,144 @@ metadata:
 spec:
   mode: deployment
   replicas: 1
+  serviceAccount: otel-collector      # see rbac.yaml — k8sattributes needs API read access
   resources:
     requests: { cpu: 100m, memory: 192Mi }
+    limits: { memory: 512Mi }
+  # Emits a ServiceMonitor for the collector's own otelcol_* metrics. This is the only way to
+  # answer "is telemetry actually reaching the backends?" — a collector dropping every batch
+  # looks identical from the outside to one that is simply idle. The alerts that consume these
+  # series live in gitops/apps/kube-prometheus-stack/values.yaml.
+  observability:
+    metrics:
+      enableMetrics: true
   config:
+    extensions:
+      # Gives the operator a real readiness signal instead of "the process is running".
+      health_check:
+        endpoint: 0.0.0.0:13133
+
     receivers:
       otlp:
         protocols:
           grpc: { endpoint: 0.0.0.0:4317 }
           http: { endpoint: 0.0.0.0:4318 }
+
     processors:
-      batch: {}
       memory_limiter:
         check_interval: 5s
         limit_percentage: 80
         spike_limit_percentage: 25
+
+      # Enriches app-pushed telemetry with Kubernetes identity. The app sets k8s.pod.name itself
+      # via the downward API, but it cannot know its own Deployment, ReplicaSet or node — those
+      # only exist in the API server. The `connection` association resolves the sender from the
+      # source IP of the OTLP request, which is what makes this work for pods that set nothing.
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.deployment.name
+            - k8s.replicaset.name
+            - k8s.statefulset.name
+            - k8s.node.name
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.name
+              - from: resource_attribute
+                name: k8s.namespace.name
+          - sources:
+              - from: connection
+
+      # k8s.cluster.name is one of the resource attributes Loki indexes by default, so this is a
+      # free label that keeps this cluster's data distinguishable if it is ever centralised.
+      resource/cluster:
+        attributes:
+          - key: k8s.cluster.name
+            value: eks-golden
+            action: upsert
+
+      # The remote-write exporter puts resource attributes in a companion `target_info` series
+      # rather than as labels on each metric, so PromQL cannot filter by namespace or environment
+      # without a join. Copying just these two onto the datapoints keeps dashboards and alerts
+      # readable. Deliberately NOT resource_to_telemetry_conversion, which promotes EVERY resource
+      # attribute including k8s.pod.name — unbounded cardinality, and the classic way to OOM a
+      # small Prometheus. error_mode: ignore so a producer lacking these attributes (any
+      # third-party workload) passes through untouched instead of failing the whole batch.
+      transform/metric-dimensions:
+        error_mode: ignore
+        metric_statements:
+          - context: datapoint
+            statements:
+              - set(attributes["k8s_namespace_name"], resource.attributes["k8s.namespace.name"])
+              - set(attributes["deployment_environment"], resource.attributes["deployment.environment.name"])
+
+      batch:
+        send_batch_size: 1024
+        send_batch_max_size: 2048
+        timeout: 5s
+
     exporters:
       # METRICS -> Prometheus remote-write endpoint (kube-prometheus-stack).
+      # HARD DEPENDENCY: prometheus.prometheusSpec.enableRemoteWriteReceiver must be true in
+      # gitops/apps/kube-prometheus-stack/values.yaml. Prometheus 404s this path by default and
+      # the resulting data loss is completely silent.
       prometheusremotewrite:
         endpoint: http://prometheus-operated.monitoring.svc:9090/api/v1/write
+        send_metadata: true
+        retry_on_failure:
+          enabled: true
+        # NOTE: this exporter uses `remote_write_queue`, not the `sending_queue` every other
+        # exporter takes — it maintains its own sharded write queue. Using sending_queue here is
+        # a hard config error that keeps the collector from starting at all.
+        remote_write_queue:
+          enabled: true
+          queue_size: 10000
+          num_consumers: 5
       # LOGS -> Loki native OTLP endpoint via otlphttp (the dedicated loki exporter is deprecated).
+      # otlphttp appends /v1/logs to this base path.
       otlphttp/loki:
         endpoint: http://loki-gateway.logging.svc.cluster.local/otlp
+        retry_on_failure:
+          enabled: true
+        sending_queue:
+          enabled: true
+          queue_size: 1000
       # TRACES -> Tempo's OTLP gRPC receiver (monolithic Tempo, gitops/apps/tempo/). In-cluster
       # traffic, so TLS is disabled; the service name follows the chart's fullname (tempo) in the
       # tracing namespace.
       otlp/tempo:
         endpoint: tempo.tracing.svc.cluster.local:4317
         tls: { insecure: true }
+        retry_on_failure:
+          enabled: true
+        sending_queue:
+          enabled: true
+          queue_size: 1000
+
     service:
+      extensions: [health_check]
+      # memory_limiter is FIRST in every pipeline by design: it can only apply backpressure if it
+      # inspects data before anything buffers it. batch is LAST so batches are formed from the
+      # final, enriched records.
       pipelines:
         metrics:
           receivers: [otlp]
-          processors: [memory_limiter, batch]
+          processors: [memory_limiter, k8sattributes, resource/cluster, transform/metric-dimensions, batch]
           exporters: [prometheusremotewrite]
         logs:
           receivers: [otlp]
-          processors: [memory_limiter, batch]
+          processors: [memory_limiter, k8sattributes, resource/cluster, batch]
           exporters: [otlphttp/loki]
         traces:
           receivers: [otlp]
-          processors: [memory_limiter, batch]
+          processors: [memory_limiter, k8sattributes, resource/cluster, batch]
           exporters: [otlp/tempo]

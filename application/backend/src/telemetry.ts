@@ -10,8 +10,9 @@
  * Signals are exported over OTLP/HTTP to the platform's gateway collector
  * (see gitops/apps/otel-collector), which fans out traces -> Tempo,
  * metrics -> Prometheus, logs -> Loki. Container stdout (structured JSON from
- * logger.ts) is shipped to Loki by the node-level collector DaemonSet, so we
- * deliberately do not also push logs over OTLP from here (avoids duplication).
+ * logger.ts) is shipped to Loki by the node-level collector DaemonSet
+ * (gitops/apps/otel-collector/logs-daemonset.yaml), so we deliberately do not
+ * also push logs over OTLP from here (avoids duplication).
  */
 import { diag, DiagConsoleLogger, DiagLogLevel } from "@opentelemetry/api";
 import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";

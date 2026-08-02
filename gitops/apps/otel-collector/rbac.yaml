@@ -1,0 +1,53 @@
+# RBAC shared by both collectors in this directory (gateway + logs DaemonSet).
+#
+# WHY THIS FILE EXISTS: the `k8sattributes` processor enriches every span/metric/log with the
+# pod's Kubernetes identity (deployment, node, namespace, workload owner). It does that by
+# calling the API server, so it needs read access to pods/namespaces/nodes and to the ReplicaSet
+# that links a pod back to its Deployment. The OpenTelemetry Operator provisions Collector pods
+# but does NOT grant them cluster read permissions — that is deliberately left to the user,
+# because the operator cannot know what your processors need.
+#
+# The failure mode when this is missing is quiet and confusing: the collector starts, reports
+# healthy, forwards data — and every record arrives with no k8s.* attributes, so Loki has no
+# namespace label and Grafana's trace-to-logs correlation silently matches nothing.
+#
+# One ServiceAccount is shared by both collectors (referenced via `spec.serviceAccount`) rather
+# than letting the operator auto-create `<name>-collector` SAs, so the binding below cannot
+# drift out of sync with a renamed collector.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  namespace: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector
+rules:
+  # Pod/namespace/node lookups performed by k8sattributes for every association.
+  - apiGroups: [""]
+    resources: [pods, namespaces, nodes]
+    verbs: [get, list, watch]
+  # ReplicaSets are how a pod is resolved to its owning Deployment. Without this the
+  # k8s.deployment.name attribute is simply absent — no error is logged.
+  - apiGroups: ["apps"]
+    resources: [replicasets]
+    verbs: [get, list, watch]
+  # Read-only access to node stats, used if a hostmetrics/kubeletstats receiver is added later.
+  - apiGroups: [""]
+    resources: [nodes/stats]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-collector
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: observability

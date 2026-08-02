@@ -5,7 +5,11 @@ metadata:
   name: loki
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "2"
+    # Wave 3, moved up from 2: Loki now ships a ServiceMonitor (monitoring.serviceMonitor.enabled),
+    # and that CRD is installed by kube-prometheus-stack in wave 2. Left in the same wave the two
+    # Applications race, and a loss produces the repo's most familiar failure text — "one or more
+    # synchronization tasks are not valid" — with no mention of the missing CRD.
+    argocd.argoproj.io/sync-wave: "3"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:

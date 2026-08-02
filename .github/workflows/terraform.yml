@@ -184,6 +184,29 @@ jobs:
           render eks-charts/aws-load-balancer-controller gitops/bootstrap/alb-controller.yaml \
             kube-system gitops/apps/alb-controller/values.yaml
 
+      # The two CRD gates above cannot see this class of bug. The OpenTelemetryCollector CRD
+      # declares spec.config with x-kubernetes-preserve-unknown-fields, so Kubernetes deliberately
+      # does not validate the pipeline inside it — that schema belongs to the collector binary.
+      #
+      # Concretely: `prometheusremotewrite` takes `remote_write_queue`, NOT the `sending_queue`
+      # every other exporter accepts. Writing sending_queue passes kubectl, helm template, both
+      # CRD gates and ArgoCD (Application goes green), then CrashLoops the collector with
+      # "has invalid keys: sending_queue". Since this collector is the ONLY path to Prometheus,
+      # Loki and Tempo, that means the whole platform goes blind while every dashboard and every
+      # ArgoCD tile reports healthy. So: run the real binary, from the exact image the pinned
+      # operator chart deploys, in validate mode.
+      - name: OTel Collector pipelines are valid for the pinned collector build
+        run: |
+          set -euo pipefail
+          ver=$(grep -oP 'targetRevision:\s*\K[0-9]+\.[0-9]+\.[0-9]+' \
+            gitops/bootstrap/otel-operator.yaml | head -1)
+          image=$(helm template t otel/opentelemetry-operator --version "${ver}" \
+            -n observability -f gitops/apps/otel-operator/values.yaml \
+            | grep -oE 'otel/opentelemetry-collector-contrib:[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+          python3 scripts/otel_config_gate.py "${image}" \
+            gitops/apps/otel-collector/collector.yaml \
+            gitops/apps/otel-collector/logs-daemonset.yaml
+
   # Plan against the real account. Only on main, where the OIDC role trust allows it.
   plan:
     if: github.ref == 'refs/heads/main'

@@ -1,0 +1,241 @@
+# OpenTelemetry Collector — node-level LOG collector (DaemonSet).
+#
+# WHY THIS EXISTS: this is the missing half of the logging pipeline. The application deliberately
+# does NOT push logs over OTLP (see application/backend/src/telemetry.ts) — it writes structured
+# JSON to stdout, which is the twelve-factor behaviour and keeps log delivery working even when
+# the app process is wedged. Something has to read those container files off the node and ship
+# them, and until this DaemonSet existed nothing did: the gateway's `logs` pipeline was wired all
+# the way to Loki but had no producer, so `{k8s_namespace_name="mcp-prod"}` returned nothing while
+# every component in the stack reported Healthy.
+#
+# One collector per node reads /var/log/pods, parses the CRI envelope, lifts the app's JSON
+# fields into attributes, promotes trace_id/span_id onto the OTLP LogRecord (this is what makes
+# Grafana's Loki <-> Tempo correlation work in both directions), enriches with Kubernetes
+# identity, and forwards to the gateway — so there is still exactly ONE egress point per signal.
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: logs
+  namespace: observability
+spec:
+  mode: daemonset
+  serviceAccount: otel-collector       # see rbac.yaml — k8sattributes needs API read access
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 256Mi }
+
+  # Log files under /var/log/pods are owned by root and mode 0600. A collector running as the
+  # image's default non-root user reads nothing and logs a permission error per file, which is
+  # easy to mistake for "no logs are being produced". Root + a read-only mount is the standard
+  # trade for node log collection; the container drops every capability and cannot escalate.
+  securityContext:
+    runAsUser: 0
+    runAsGroup: 0
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+  # Log collection must cover EVERY node, including any that are tainted (Karpenter can provision
+  # nodes with taints, and control-plane-style taints would otherwise create silent blind spots).
+  tolerations:
+    - operator: Exists
+
+  env:
+    # k8sattributes uses this to only watch pods on THIS node, which keeps its informer cache
+    # proportional to the node instead of the cluster.
+    - name: K8S_NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+
+  volumes:
+    - name: varlogpods
+      hostPath:
+        path: /var/log/pods
+    # Persists the filelog reader's offsets. Without it, a collector restart re-reads every log
+    # file from `start_at` and duplicates hours of logs into Loki.
+    - name: otelcol-storage
+      hostPath:
+        path: /var/lib/otelcol/logs
+        type: DirectoryOrCreate
+
+  volumeMounts:
+    - name: varlogpods
+      mountPath: /var/log/pods
+      readOnly: true
+    - name: otelcol-storage
+      mountPath: /var/lib/otelcol
+
+  # Emits a ServiceMonitor for the collector's own otelcol_* metrics so the pipeline itself is
+  # observable (see the OtelCollector* alerts in gitops/apps/kube-prometheus-stack/values.yaml).
+  observability:
+    metrics:
+      enableMetrics: true
+
+  config:
+    extensions:
+      file_storage:
+        directory: /var/lib/otelcol
+        # The hostPath mount is DirectoryOrCreate, but a node whose kubelet created the mount
+        # with different ownership would otherwise fail startup with "directory must exist".
+        create_directory: true
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    receivers:
+      # `file_log`, not `filelog`: the latter is a deprecated alias in collector 0.156.0 (the
+      # version pinned by opentelemetry-operator 0.120.0) and logs a warning on every start.
+      file_log:
+        include: [/var/log/pods/*/*/*.log]
+        # Excluding the collectors' OWN logs breaks the amplification loop: if Loki degrades, the
+        # collector logs errors, which this receiver would collect and try to ship to Loki,
+        # producing more errors. Scoped to the two collector pods rather than the whole namespace
+        # so the operator's logs are still captured.
+        exclude:
+          - /var/log/pods/observability_gateway-collector-*/*/*.log
+          - /var/log/pods/observability_logs-collector-*/*/*.log
+        # `end` on first start: a fresh node has hours of backlog that is of no diagnostic value
+        # and would blow through Loki's ingestion limits. Offsets in file_storage mean restarts
+        # resume exactly where they left off, so this only applies to genuinely new files.
+        start_at: end
+        # Required, not cosmetic: the container operator's add_metadata_from_filepath reads the
+        # `log.file.path` attribute to derive namespace/pod/container. Turning this off silently
+        # strips every Kubernetes label off the logs.
+        include_file_path: true
+        include_file_name: false
+        storage: file_storage
+        retry_on_failure:
+          enabled: true
+        operators:
+          # Handles the CRI/containerd line envelope (timestamp, stream, partial-line joining)
+          # and, via add_metadata_from_filepath, derives k8s.namespace.name / k8s.pod.name /
+          # k8s.container.name / k8s.pod.uid from the /var/log/pods/<ns>_<pod>_<uid>/<container>/
+          # path. Those become Loki index labels for free.
+          - id: container-parser
+            type: container
+            add_metadata_from_filepath: true
+
+          # The app logs one JSON object per line (application/backend/src/logger.ts). Parsing it
+          # here turns level/service/trace_id/message into real attributes instead of an opaque
+          # string, so Loki stores them as queryable structured metadata.
+          # hasPrefix rather than a regex: no backslash-escaping to get wrong across YAML, and it
+          # cannot throw on a non-JSON line from a third-party container.
+          - id: app-json
+            type: json_parser
+            if: 'hasPrefix(body, "{")'
+            parse_from: body
+            parse_to: attributes
+            # send_quiet: a line that looks like JSON but is not still reaches Loki unparsed,
+            # rather than being dropped or spamming the collector's own log.
+            on_error: send_quiet
+            severity:
+              parse_from: attributes.level
+              mapping:
+                debug: debug
+                info: info
+                warn: warn
+                error: error
+
+          # THE correlation hinge. Moves trace_id/span_id out of the log body and onto the OTLP
+          # LogRecord's native TraceID/SpanID fields; Loki then stores them as structured metadata
+          # named trace_id/span_id, which is exactly what the Loki datasource's derivedFields
+          # matcher looks for. Without this the fields are just text and the "View trace" link
+          # never appears.
+          - id: trace-ids
+            type: trace_parser
+            if: 'attributes["trace_id"] != nil'
+            trace_id:
+              parse_from: attributes.trace_id
+            span_id:
+              parse_from: attributes.span_id
+
+          # trace_parser COPIES rather than moves, so without these the ids reach Loki twice:
+          # once from the LogRecord's native TraceID/SpanID fields and once as log attributes,
+          # producing duplicate structured-metadata keys on every correlated line. `time` is
+          # dropped for the same reason — the record already carries the timestamp the container
+          # runtime stamped on the line.
+          - id: drop-duplicate-trace-id
+            type: remove
+            if: 'attributes["trace_id"] != nil'
+            field: attributes.trace_id
+          - id: drop-duplicate-span-id
+            type: remove
+            if: 'attributes["span_id"] != nil'
+            field: attributes.span_id
+          - id: drop-duplicate-time
+            type: remove
+            if: 'attributes["time"] != nil'
+            field: attributes.time
+
+    processors:
+      memory_limiter:
+        check_interval: 5s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+
+      # Adds workload identity (deployment/daemonset/node) that the file path alone cannot supply.
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        filter:
+          node_from_env_var: K8S_NODE_NAME
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.pod.start_time
+            - k8s.deployment.name
+            - k8s.replicaset.name
+            - k8s.daemonset.name
+            - k8s.statefulset.name
+            - k8s.job.name
+            - k8s.cronjob.name
+            - k8s.node.name
+        # Tried in order. The file path already gives us pod uid, so the first rule resolves
+        # almost every record without a fallback.
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.name
+              - from: resource_attribute
+                name: k8s.namespace.name
+
+      # k8s.cluster.name is one of the resource attributes Loki indexes by default, so this
+      # becomes a free label that distinguishes this cluster if logs are ever centralised.
+      resource/cluster:
+        attributes:
+          - key: k8s.cluster.name
+            value: eks-golden
+            action: upsert
+
+      batch:
+        send_batch_size: 1024
+        send_batch_max_size: 2048
+        timeout: 5s
+
+    exporters:
+      # Forward to the gateway rather than straight to Loki: one place to change the log backend,
+      # and the gateway absorbs retry/queueing so per-node collectors stay small.
+      otlp/gateway:
+        endpoint: gateway-collector.observability.svc:4317
+        tls: { insecure: true }
+        retry_on_failure:
+          enabled: true
+        sending_queue:
+          enabled: true
+          queue_size: 1000
+
+    service:
+      extensions: [file_storage, health_check]
+      # memory_limiter FIRST (it can only shed load if it sees data before it is buffered),
+      # batch LAST (batching after enrichment keeps batches uniform).
+      pipelines:
+        logs:
+          receivers: [file_log]
+          processors: [memory_limiter, k8sattributes, resource/cluster, batch]
+          exporters: [otlp/gateway]
