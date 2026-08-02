@@ -32,7 +32,7 @@ spec:
     - list:
         elements:
           # Wave 5 matches the pre-split app: after otel-operator (2) and the gateway
-          # collector (3), so the OTLP endpoint exists before pods start. Envs then
+          # collector (4), so the OTLP endpoint exists before pods start. Envs then
           # roll in order dev -> stage -> prod.
           - env: dev
             namespace: mcp-dev

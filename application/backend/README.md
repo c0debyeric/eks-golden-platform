@@ -29,8 +29,10 @@ OpenTelemetry SDK · Docker (multi-stage, non-root) · Zod
 - Traces and metrics are pushed over **OTLP/HTTP** to the gateway collector at
   `http://gateway-collector.observability.svc:4318` (see `gitops/apps/otel-collector/`).
 - Logs are written as **structured JSON to stdout**; the platform's node-level OTel Collector
-  DaemonSet ships container stdout to Loki. Each log line carries `trace_id`/`span_id` when
-  emitted inside a span, so Grafana can pivot Tempo ⇄ Loki.
+  DaemonSet (`gitops/apps/otel-collector/logs-daemonset.yaml`) reads them from `/var/log/pods`,
+  parses the JSON, and forwards them through the gateway to Loki. Each log line carries
+  `trace_id`/`span_id` when emitted inside a span, and the DaemonSet promotes those onto the OTLP
+  log record so Grafana can pivot Tempo ⇄ Loki in both directions.
 
 ---
 
@@ -151,12 +153,16 @@ It is **keyless** — the same OIDC model as the Terraform workflow:
 - Assumes the repo CI role via `vars.AWS_ROLE_ARN` (already configured for the Terraform workflow —
   no new secret or IAM role needed; that role can push to ECR).
 - Ensures the `mcp-backend` ECR repo exists (IMMUTABLE tags, scan-on-push), logs in, then builds +
-  pushes `mcp-backend:<12-char git SHA>` for `linux/amd64` with layer caching.
+  pushes `mcp-backend:<12-char git SHA>` for `linux/amd64,linux/arm64` with layer caching. Both
+  architectures are required: the Karpenter NodePool allows amd64 and arm64, and an amd64-only
+  image pulls fine on a Graviton node and then dies with "exec format error". CI enforces the
+  match (`scripts/build_arch_gate.py`).
 - Prints the exact image reference + digest to the run summary.
 
-Copy that reference into `image:` in `gitops/apps/mcp-backend/deployment.yaml` (or pin by digest);
-ArgoCD then rolls it out. Prefer pure IaC? Move the ECR repo into `terraform/bootstrap` (a peer of
-the state bucket) so it is Terraform-managed and persists across `make down`/`up`.
+Pin that **digest** in the `images:` block of the overlay you are promoting into
+(`gitops/apps/mcp-backend/overlays/<env>/kustomization.yaml`); ArgoCD then rolls it out. Prefer
+pure IaC? Move the ECR repo into `terraform/bootstrap` (a peer of the state bucket) so it is
+Terraform-managed and persists across `make down`/`up`.
 
 ## Kubernetes (GitOps) deployment
 
@@ -164,19 +170,31 @@ This service is stateless, so it scales horizontally with no session affinity. T
 ArgoCD-managed manifests are committed to the repo and reconciled automatically:
 
 ```
-gitops/bootstrap/mcp-backend.yaml     ArgoCD Application (sync wave 5)
+gitops/bootstrap/mcp-backend.yaml     ApplicationSet -> one Application per environment
 gitops/apps/mcp-backend/
-├── deployment.yaml                   2 replicas, non-root, probes, OTLP env, zone spread
-├── service.yaml                      ClusterIP :80 -> :8080 (internal only)
-└── pdb.yaml                          PodDisruptionBudget (minAvailable: 1)
+├── base/
+│   ├── deployment.yaml               non-root, probes, OTLP env, zone spread
+│   ├── service.yaml                  ClusterIP :80 -> :8080 (internal only)
+│   ├── pdb.yaml                      PodDisruptionBudget (minAvailable: 1)
+│   └── kustomization.yaml
+└── overlays/
+    ├── dev/                          mcp-dev,   1 replica,  PDB removed, auto-sync
+    ├── stage/                        mcp-stage, 2 replicas, PDB kept,    auto-sync
+    └── prod/                         mcp-prod,  3 replicas, PDB minAvailable 2, MANUAL sync
 ```
 
-The root app-of-apps discovers `gitops/bootstrap/mcp-backend.yaml` and deploys everything into
-the `application` namespace at **sync wave 5** — after the observability stack (OTel operator wave
-2, gateway collector wave 3), so the OTLP endpoint exists when pods start.
+The root app-of-apps discovers `gitops/bootstrap/mcp-backend.yaml`, whose ApplicationSet creates
+three Applications that roll out in order at **sync waves 5 / 6 / 7** (dev → stage → prod) — all
+after the observability stack (OTel operator wave 2, gateway collector wave 4), so the OTLP
+endpoint exists before any pod starts. Each environment lands in its own namespace; there is no
+shared `application` namespace.
 
-Before it can pull, **build and push the image** to your registry and update the `image:` field in
-`gitops/apps/mcp-backend/deployment.yaml` (it ships with a placeholder).
+The base `image:` is the sentinel `PLACEHOLDER_IMAGE`, which is **not** meant to be edited. Each
+overlay rewrites it through a kustomize `images:` block that pins the ECR repo plus the exact
+**digest** being promoted, so an environment can only ever run an image someone explicitly moved
+into it. A sentinel is used rather than a plausible default because a real-looking tag in the base
+would be silently inherited by any overlay whose patch is wrong — promotion is a digest change in
+the overlay, reviewed as a pull request.
 
 Notes:
 - Uses the **explicit OTel SDK** (in `telemetry.ts`) rather than the operator's zero-code

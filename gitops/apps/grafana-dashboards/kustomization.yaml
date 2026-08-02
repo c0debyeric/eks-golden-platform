@@ -1,0 +1,35 @@
+# Dashboards delivered as ConfigMaps for the Grafana sidecar to pick up.
+#
+# WHY THIS APP EXISTS: the sidecar has been enabled since the stack was first deployed
+# (grafana.sidecar.dashboards in gitops/apps/kube-prometheus-stack/values.yaml), watching every
+# namespace for ConfigMaps labelled grafana_dashboard=1 — but the repo shipped none, so Grafana
+# came up with only the chart's generic Kubernetes dashboards. There was no view of the
+# application, and no view of the telemetry pipeline itself.
+#
+# WHY ConfigMaps rather than Grafana's own persistence: the sidecar reloads them on change, so a
+# dashboard edit is a reviewed pull request rather than a click in a UI whose SQLite database is
+# destroyed by `make down`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: monitoring
+
+configMapGenerator:
+  - name: grafana-dashboard-mcp-backend
+    files:
+      - mcp-backend-golden-signals.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+  - name: grafana-dashboard-otel-pipeline
+    files:
+      - otel-pipeline-health.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+
+generatorOptions:
+  # Without this, kustomize appends a content hash to each ConfigMap name. The sidecar copes, but
+  # ArgoCD would prune-and-recreate on every edit, and the old dashboard would briefly vanish from
+  # Grafana mid-sync. Stable names make the update an in-place patch.
+  disableNameSuffixHash: true

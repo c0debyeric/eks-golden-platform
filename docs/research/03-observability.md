@@ -226,10 +226,14 @@ Rank  Mode         Use for
 **Decision:** a **DaemonSet** collector (scrapes node logs + host metrics) + a **Deployment**
 gateway collector (receives OTLP from apps, fans out to backends). Two OpenTelemetryCollector CRs.
 
+> **Implemented:** `gitops/apps/otel-collector/collector.yaml` (gateway) and
+> `logs-daemonset.yaml` (node log collection), sharing the ServiceAccount/ClusterRole in
+> `rbac.yaml` that the `k8sattributes` processor requires.
+
 ### The pipeline (receive OTLP → export to each backend)
 
 ```yaml
-# gitops/apps/otel-collector/collector.yaml  (sync wave 3 — needs operator CRD)
+# gitops/apps/otel-collector/collector.yaml  (sync wave 4 — needs operator CRD)
 apiVersion: opentelemetry.io/v1beta1
 kind: OpenTelemetryCollector
 metadata: { name: gateway, namespace: observability }

@@ -1,0 +1,314 @@
+{
+  "uid": "mcp-backend-red",
+  "title": "mcp-backend — Golden Signals",
+  "description": "RED metrics, MCP tool activity and Node.js runtime health for the mcp-backend service. Every query uses metric names verified against the running application: http.server.request.duration and mcp.tool.invocations arrive over OTLP and are renamed by the collector's Prometheus translation (dots to underscores, unit and _total suffixes added).",
+  "tags": ["mcp-backend", "otel", "golden-signals"],
+  "timezone": "utc",
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "job",
+        "label": "Service (namespace/name)",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "qryType": 1, "query": "label_values(http_server_request_duration_seconds_count, job)", "refId": "job" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": { "text": "All", "value": "$__all" },
+        "sort": 1
+      },
+      {
+        "name": "namespace",
+        "label": "Kubernetes namespace",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "qryType": 1, "query": "label_values(http_server_request_duration_seconds_count{job=~\"$job\"}, k8s_namespace_name)", "refId": "namespace" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": { "text": "All", "value": "$__all" },
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Rate / Errors / Duration",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Request rate",
+      "description": "Requests per second across all selected replicas.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "decimals": 2, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] } },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "none", "graphMode": "area", "textMode": "auto" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(http_server_request_duration_seconds_count{job=~\"$job\", k8s_namespace_name=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "requests/s"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Error rate (5xx)",
+      "description": "Share of responses with a 5xx status. Matches the McpBackendHighErrorRate alert, which fires above 5%.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "min": 0,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 0.01 }, { "color": "red", "value": 0.05 }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(http_server_request_duration_seconds_count{job=~\"$job\", k8s_namespace_name=~\"$namespace\", http_response_status_code=~\"5..\"}[$__rate_interval]))\n/\nclamp_min(sum(rate(http_server_request_duration_seconds_count{job=~\"$job\", k8s_namespace_name=~\"$namespace\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "5xx share"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "p95 latency",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 0.5 }, { "color": "red", "value": 1 }] }
+        },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=~\"$job\", k8s_namespace_name=~\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "MCP tool calls",
+      "description": "Rate of instrumented MCP tool invocations (mcp.tool.invocations counter in application/backend/src/mcp.ts). Zero here with a non-zero request rate means traffic is arriving but no tool is being executed.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "decimals": 2 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "none", "graphMode": "area", "textMode": "auto" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(mcp_tool_invocations_total{job=~\"$job\", k8s_namespace_name=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "tool calls/s"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Request rate by method and status",
+      "description": "Note: the OTel HTTP instrumentation does not attach http.route to the duration metric, so this is broken down by method and status rather than by endpoint. Use Tempo for per-route analysis.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "stacking": { "mode": "normal", "group": "A" } } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (http_request_method, http_response_status_code) (rate(http_server_request_duration_seconds_count{job=~\"$job\", k8s_namespace_name=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "{{http_request_method}} {{http_response_status_code}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency percentiles",
+      "description": "Click a point to jump to an exemplar trace in Tempo (requires Prometheus exemplar-storage, enabled in the kube-prometheus-stack values).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 0, "lineWidth": 1, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=~\"$job\", k8s_namespace_name=~\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "p50",
+          "exemplar": true
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=~\"$job\", k8s_namespace_name=~\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "p95",
+          "exemplar": true
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{job=~\"$job\", k8s_namespace_name=~\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "p99",
+          "exemplar": true
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "MCP tools",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Tool invocations by tool and outcome",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "bars", "fillOpacity": 60, "lineWidth": 0, "showPoints": "never", "stacking": { "mode": "normal", "group": "A" } } },
+        "overrides": [{ "matcher": { "id": "byRegexp", "options": ".*error.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }]
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (tool, status) (rate(mcp_tool_invocations_total{job=~\"$job\", k8s_namespace_name=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "{{tool}} — {{status}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Tool failure ratio",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 1, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (tool) (rate(mcp_tool_invocations_total{job=~\"$job\", k8s_namespace_name=~\"$namespace\", status!=\"ok\"}[$__rate_interval]))\n/\nclamp_min(sum by (tool) (rate(mcp_tool_invocations_total{job=~\"$job\", k8s_namespace_name=~\"$namespace\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "{{tool}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Node.js runtime",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Event loop utilization",
+      "description": "Sustained values near 1 mean the single Node thread is saturated — the usual cause of latency that CPU throttling metrics do not explain.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 24 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1, "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 1, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "avg by (job) (nodejs_eventloop_utilization_ratio{job=~\"$job\", k8s_namespace_name=~\"$namespace\"})",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Event loop delay p99",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 24 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (job) (nodejs_eventloop_delay_p99_seconds{job=~\"$job\", k8s_namespace_name=~\"$namespace\"})",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "V8 heap used",
+      "description": "A sawtooth that never returns to baseline is the signature of a leak; the container memory limit is 192Mi in dev/stage and 384Mi in prod.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 24 },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (job) (v8js_memory_heap_used_bytes{job=~\"$job\", k8s_namespace_name=~\"$namespace\"})",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Logs",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "logs",
+      "title": "mcp-backend logs (warnings and errors)",
+      "description": "Shipped by the node-level logs DaemonSet. Each line emitted inside a span carries trace_id as structured metadata, so the Loki datasource renders a 'View trace' link straight into Tempo.",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 32 },
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending", "enableLogDetails": true, "dedupStrategy": "none", "prettifyLogMessage": false },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{k8s_namespace_name=~\"$namespace\", k8s_container_name=\"mcp-backend\"} | detected_level =~ \"warn|error\"",
+          "queryType": "range"
+        }
+      ]
+    }
+  ]
+}

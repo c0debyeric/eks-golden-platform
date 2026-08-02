@@ -3,7 +3,8 @@
 # session affinity. Telemetry is PUSHED via the explicit OTel SDK to the gateway
 # collector (not the zero-code Instrumentation CRD), so no inject-* annotation and
 # no ServiceMonitor are needed — metrics/traces reach Prometheus/Tempo through the
-# OTLP pipeline, logs reach Loki via container stdout (node DaemonSet collector).
+# OTLP pipeline, logs reach Loki via container stdout (the node-level collector
+# DaemonSet in gitops/apps/otel-collector/logs-daemonset.yaml).
 apiVersion: apps/v1
 kind: Deployment
 metadata:

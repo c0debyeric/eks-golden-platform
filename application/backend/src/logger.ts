@@ -1,9 +1,11 @@
 /**
  * Minimal structured (JSON) logger writing to stdout/stderr.
  *
- * The platform's node-level OTel Collector DaemonSet ships container stdout to
+ * The platform's node-level OTel Collector DaemonSet
+ * (gitops/apps/otel-collector/logs-daemonset.yaml) ships container stdout to
  * Loki, so one line == one JSON log record. When a log is emitted inside an
- * active span we attach `trace_id`/`span_id`, which lets Grafana pivot from a
+ * active span we attach `trace_id`/`span_id`; the DaemonSet's trace_parser
+ * lifts those onto the OTLP log record, which is what lets Grafana pivot from a
  * Tempo trace straight to the correlated Loki logs (and back).
  */
 import { context, trace } from "@opentelemetry/api";

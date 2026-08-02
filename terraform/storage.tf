@@ -37,6 +37,44 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "loki" {
   }
 }
 
+# Two rules, two very different jobs.
+#
+# 1. abort_incomplete_multipart_upload — Loki writes chunks with multipart uploads. Any upload
+#    interrupted by a pod eviction (Karpenter consolidation, OOMKill, `make down` mid-flush)
+#    leaves orphaned parts behind. Those parts are BILLED but do not appear in the object list
+#    or in the bucket size shown in the console, so the cost is invisible until you go looking
+#    for it with `s3api list-multipart-uploads`. On a cluster that is torn down and rebuilt on
+#    purpose, this is not a hypothetical.
+#
+# 2. expiration — a safety net, NOT the retention mechanism. Retention is enforced by Loki's
+#    compactor (compactor.retention_enabled in gitops/apps/loki/values.yaml, 168h). This rule
+#    sits well behind it at 30 days so that if the compactor is disabled, crash-looping, or
+#    loses its IAM permissions, the bucket still cannot grow without bound. Deliberately not
+#    set to 7 days: matching the app-level retention would let S3 delete chunks the compactor
+#    still has indexed, producing query errors instead of a clean 7-day window.
+resource "aws_s3_bucket_lifecycle_configuration" "loki" {
+  for_each = local.loki_buckets
+  bucket   = aws_s3_bucket.loki[each.value].id
+
+  rule {
+    id     = "abort-incomplete-multipart-uploads"
+    status = "Enabled"
+    filter {}
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  rule {
+    id     = "safety-net-expiration"
+    status = "Enabled"
+    filter {}
+    expiration {
+      days = 30
+    }
+  }
+}
+
 ########################################
 # Tempo trace storage (single object-storage bucket)
 ########################################
@@ -65,6 +103,32 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "tempo" {
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "aws:kms"
+    }
+  }
+}
+
+# Same two-rule posture as the Loki buckets; see the comment there for the full reasoning.
+# Tempo's own retention is 72h (tempo.retention in gitops/apps/tempo/values.yaml) and its
+# compactor does the deleting; 14 days here is the backstop against a compactor that has
+# stopped working. Traces are far higher volume than logs, so the backstop is tighter.
+resource "aws_s3_bucket_lifecycle_configuration" "tempo" {
+  bucket = aws_s3_bucket.tempo.id
+
+  rule {
+    id     = "abort-incomplete-multipart-uploads"
+    status = "Enabled"
+    filter {}
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  rule {
+    id     = "safety-net-expiration"
+    status = "Enabled"
+    filter {}
+    expiration {
+      days = 14
     }
   }
 }

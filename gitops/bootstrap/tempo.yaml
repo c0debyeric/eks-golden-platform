@@ -7,7 +7,10 @@ metadata:
   name: tempo
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "2"
+    # Wave 3, moved up from 2: Tempo now ships a ServiceMonitor and its metrics-generator
+    # remote-writes into Prometheus, so both the ServiceMonitor CRD and the Prometheus instance
+    # (kube-prometheus-stack, wave 2) must already exist.
+    argocd.argoproj.io/sync-wave: "3"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:

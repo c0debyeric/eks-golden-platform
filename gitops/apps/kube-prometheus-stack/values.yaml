@@ -4,6 +4,36 @@ prometheus:
   prometheusSpec:
     retention: 7d
     retentionSize: "8GB"
+
+    # NOT OPTIONAL — this is the ingest door for every application metric.
+    # Two writers push into Prometheus over the remote-write protocol:
+    #   1. the OTel gateway collector's `prometheusremotewrite` exporter
+    #      (gitops/apps/otel-collector/collector.yaml), carrying all OTLP app metrics, and
+    #   2. Tempo's metrics-generator (gitops/apps/tempo/values.yaml), carrying the span-metrics
+    #      and service-graph series that power Grafana's service map.
+    # Prometheus serves POST /api/v1/write ONLY when this flag is set. Left at the chart default
+    # (false) both writers get a 404 on every batch and the metrics are dropped on the floor —
+    # and NOTHING looks broken: every pod stays Ready, ArgoCD stays Synced/Healthy, and the only
+    # symptom is dashboards that render "No data". That failure mode is why this comment is long.
+    enableRemoteWriteReceiver: true
+
+    # Exemplar storage keeps a sampled trace_id alongside a histogram bucket, which is what turns
+    # latency panels into one-click jumps into Tempo (see the grafana.sidecar.datasources
+    # .exemplarTraceIdDestinations block below). Exemplars are capped in-memory, not on disk.
+    enableFeatures:
+      - exemplar-storage
+
+    # By default the operator only selects ServiceMonitors/PodMonitors/PrometheusRules carrying
+    # `release: <helm release>`. Our telemetry components are installed by OTHER Applications in
+    # OTHER namespaces — Loki (logging), Tempo (tracing), the OTel collectors (observability) —
+    # so their ServiceMonitors do not and cannot carry this chart's release label. Without these
+    # five lines the platform's self-monitoring is invisible while appearing fully healthy.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeConfigSelectorNilUsesHelmValues: false
+
     resources:
       requests: { cpu: 200m, memory: 512Mi }
       limits: { memory: 1Gi }
@@ -14,12 +44,84 @@ prometheus:
           resources:
             requests:
               storage: 10Gi
-    # remoteWrite intentionally omitted: no external TSDB cost.
+    # remoteWrite (OUTBOUND, to a managed TSDB) intentionally omitted: no external TSDB cost.
+    # Note this is the opposite direction from enableRemoteWriteReceiver above, which is inbound.
 
 alertmanager:
   alertmanagerSpec:
     resources:
       requests: { cpu: 25m, memory: 64Mi }
+
+# Alerts the bundled kube-* rules do not cover: these watch the telemetry pipeline itself.
+# A silently broken collector is worse than a noisy one, because every other alert in the
+# cluster is downstream of it.
+additionalPrometheusRulesMap:
+  otel-pipeline:
+    groups:
+      - name: otel-collector
+        rules:
+          - alert: OtelCollectorExporterFailures
+            # The collector accepted the data and then failed to hand it to Tempo/Loki/Prometheus.
+            # Signature of a wrong backend endpoint or a backend that is down.
+            #
+            # NOTE ON NAMES: the collector's own Prometheus reader exposes these counters WITHOUT
+            # the conventional `_total` suffix (verified against otel/opentelemetry-collector-
+            # contrib:0.156.0). Writing otelcol_exporter_send_failed_spans_total here would
+            # produce a rule that is syntactically valid and can never fire.
+            expr: |
+              sum by (job, exporter) (rate(otelcol_exporter_send_failed_spans[5m]))
+                + sum by (job, exporter) (rate(otelcol_exporter_send_failed_metric_points[5m]))
+                + sum by (job, exporter) (rate(otelcol_exporter_send_failed_log_records[5m])) > 0
+            for: 10m
+            labels: { severity: warning }
+            annotations:
+              summary: "OTel collector exporter {{ $labels.exporter }} is failing to send"
+              description: "{{ $labels.job }}/{{ $labels.exporter }} has been failing to export telemetry for 10m."
+
+          - alert: OtelCollectorRefusingData
+            # Backpressure: memory_limiter is shedding load, i.e. the collector is undersized.
+            expr: |
+              sum by (job) (rate(otelcol_receiver_refused_spans[5m]))
+                + sum by (job) (rate(otelcol_receiver_refused_metric_points[5m]))
+                + sum by (job) (rate(otelcol_receiver_refused_log_records[5m])) > 0
+            for: 10m
+            labels: { severity: warning }
+            annotations:
+              summary: "OTel collector {{ $labels.job }} is refusing telemetry"
+              description: "memory_limiter is shedding load — the collector needs more memory or replicas."
+
+          - alert: OtelCollectorQueueNearlyFull
+            expr: otelcol_exporter_queue_size / otelcol_exporter_queue_capacity > 0.8
+            for: 10m
+            labels: { severity: warning }
+            annotations:
+              summary: "OTel collector export queue for {{ $labels.exporter }} is >80% full"
+              description: "Sustained queue growth precedes data loss: the backend is slower than ingest."
+
+      - name: mcp-backend
+        rules:
+          - alert: McpBackendHighErrorRate
+            # RED metrics from the app's own OTLP export. `http.server.request.duration` becomes
+            # http_server_request_duration_seconds_* after the remote-write exporter's
+            # OTLP -> Prometheus name translation.
+            expr: |
+              sum by (job) (rate(http_server_request_duration_seconds_count{job=~".*mcp-backend.*", http_response_status_code=~"5.."}[5m]))
+                /
+              sum by (job) (rate(http_server_request_duration_seconds_count{job=~".*mcp-backend.*"}[5m])) > 0.05
+            for: 10m
+            labels: { severity: warning }
+            annotations:
+              summary: "mcp-backend 5xx rate above 5% ({{ $labels.job }})"
+
+          - alert: McpBackendNoTelemetry
+            # The app is Running (kubelet probes pass) but has stopped reporting. Catches the
+            # class of bug where telemetry breaks without the workload breaking.
+            expr: absent(http_server_request_duration_seconds_count{job=~".*mcp-backend.*"})
+            for: 30m
+            labels: { severity: warning }
+            annotations:
+              summary: "No metrics received from mcp-backend for 30m"
+              description: "The app -> gateway collector -> Prometheus OTLP path is broken, or the app is idle."
 
 grafana:
   enabled: true
@@ -35,22 +137,73 @@ grafana:
       uid: loki
       access: proxy
       url: http://loki-gateway.logging.svc.cluster.local
+      jsonData:
+        # LOGS -> TRACES: the return leg of the correlation loop.
+        # logger.ts stamps trace_id/span_id onto every line emitted inside an active span; the
+        # logs DaemonSet's trace_parser lifts them onto the OTLP LogRecord; Loki stores them as
+        # structured metadata under the label `trace_id`. matcherType `label` reads that
+        # structured metadata directly, so no regex over the log body is needed and the link
+        # keeps working even if the log format changes.
+        derivedFields:
+          - name: TraceID
+            datasourceUid: tempo
+            matcherType: label
+            matcherRegex: trace_id
+            url: "${__value.raw}"
+            urlDisplayLabel: "View trace"
     - name: Tempo
       type: tempo
       uid: tempo
       access: proxy
       url: http://tempo.tracing.svc.cluster.local:3200
-      # Trace-to-logs correlation: jump from a Tempo span to its Loki logs in one click.
       jsonData:
+        # TRACES -> LOGS: jump from a Tempo span to its Loki logs in one click. filterByTraceID
+        # narrows the generated LogQL to that exact trace instead of dumping the whole service's
+        # log stream into the panel.
         tracesToLogsV2:
           datasourceUid: loki
           spanStartTimeShift: "-1h"
           spanEndTimeShift: "1h"
+          filterByTraceID: true
+          filterBySpanID: false
+          # Maps OTel resource attributes to the Loki label names they become after Loki's
+          # dot -> underscore normalisation, so the generated selector actually matches.
+          tags:
+            - key: service.name
+              value: service_name
+            - key: k8s.namespace.name
+              value: k8s_namespace_name
+        # TRACES -> METRICS: backed by the span-metrics series Tempo's metrics-generator
+        # remote-writes into Prometheus (gitops/apps/tempo/values.yaml).
+        tracesToMetrics:
+          datasourceUid: prometheus
+          spanStartTimeShift: "-2m"
+          spanEndTimeShift: "2m"
+          tags:
+            - key: service.name
+              value: service
+        # Service map + node graph render from the service-graph series, also produced by Tempo's
+        # metrics-generator. Grafana builds the PromQL itself, so no metric names are hardcoded
+        # here and a Tempo version bump cannot silently break the panel.
+        serviceMap:
+          datasourceUid: prometheus
+        nodeGraph:
+          enabled: true
+        streamingEnabled:
+          search: true
   sidecar:
     dashboards:
       enabled: true          # auto-load ConfigMaps labeled grafana_dashboard=1
       label: grafana_dashboard
       searchNamespace: ALL
+    datasources:
+      # METRICS -> TRACES: Prometheus stores a sampled trace_id (an exemplar) alongside histogram
+      # buckets; this tells Grafana which datasource to open when one is clicked. Together with
+      # the two blocks above it closes the triangle: metrics -> traces -> logs -> traces.
+      exemplarTraceIdDestinations:
+        datasourceUid: tempo
+        traceIdLabelName: trace_id
+        urlDisplayLabel: "View trace"
   resources:
     requests: { cpu: 50m, memory: 128Mi }
 

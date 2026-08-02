@@ -1,0 +1,175 @@
+{
+  "uid": "otel-pipeline-health",
+  "title": "OpenTelemetry Pipeline Health",
+  "description": "Answers the one question no other dashboard can: is telemetry actually reaching Prometheus, Loki and Tempo? A collector that silently drops every batch is indistinguishable from an idle cluster unless you watch these series. Metric names verified against otel/opentelemetry-collector-contrib:0.156.0 — note the collector's internal Prometheus reader exposes counters WITHOUT the usual _total suffix.",
+  "tags": ["opentelemetry", "platform", "observability"],
+  "timezone": "utc",
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "job",
+        "label": "Collector",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "qryType": 1, "query": "label_values(otelcol_process_uptime, job)", "refId": "job" },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": { "text": "All", "value": "$__all" },
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Throughput — accepted vs exported",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Traces",
+      "description": "Accepted should track exported. A persistent gap means data is being dropped between the receiver and Tempo.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "cps", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never" } },
+        "overrides": [{ "matcher": { "id": "byRegexp", "options": "(?i).*(refused|failed).*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }]
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(otelcol_receiver_accepted_spans{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "accepted" },
+        { "refId": "B", "expr": "sum(rate(otelcol_exporter_sent_spans{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "exported" },
+        { "refId": "C", "expr": "sum(rate(otelcol_receiver_refused_spans{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "refused" },
+        { "refId": "D", "expr": "sum(rate(otelcol_exporter_send_failed_spans{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "send failed" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Metric points",
+      "description": "A non-zero 'send failed' here is almost always Prometheus rejecting remote-write — check that prometheusSpec.enableRemoteWriteReceiver is still true.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "cps", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never" } },
+        "overrides": [{ "matcher": { "id": "byRegexp", "options": "(?i).*(refused|failed).*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }]
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(otelcol_receiver_accepted_metric_points{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "accepted" },
+        { "refId": "B", "expr": "sum(rate(otelcol_exporter_sent_metric_points{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "exported" },
+        { "refId": "C", "expr": "sum(rate(otelcol_receiver_refused_metric_points{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "refused" },
+        { "refId": "D", "expr": "sum(rate(otelcol_exporter_send_failed_metric_points{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "send failed" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Log records",
+      "description": "Produced by the per-node logs DaemonSet reading /var/log/pods and forwarded through the gateway to Loki. Flat zero across the cluster means container log collection has stopped.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "cps", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never" } },
+        "overrides": [{ "matcher": { "id": "byRegexp", "options": "(?i).*(refused|failed).*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }]
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(otelcol_receiver_accepted_log_records{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "accepted" },
+        { "refId": "B", "expr": "sum(rate(otelcol_exporter_sent_log_records{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "exported" },
+        { "refId": "C", "expr": "sum(rate(otelcol_receiver_refused_log_records{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "refused" },
+        { "refId": "D", "expr": "sum(rate(otelcol_exporter_send_failed_log_records{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "send failed" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Backpressure and queues",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Export queue utilisation",
+      "description": "Queue size over capacity, per exporter. Sustained growth means the backend is slower than ingest and precedes data loss — the OtelCollectorQueueNearlyFull alert fires above 80%.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 1, "showPoints": "never", "thresholdsStyle": { "mode": "dashed" } },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.8 }] }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (job, exporter) (otelcol_exporter_queue_size{job=~\"$job\"})\n/\nclamp_min(sum by (job, exporter) (otelcol_exporter_queue_capacity{job=~\"$job\"}), 1)",
+          "legendFormat": "{{job}} — {{exporter}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Collector memory (RSS)",
+      "description": "memory_limiter starts refusing data at 80% of the container limit; that shows up as 'refused' on the throughput panels above rather than as an OOMKill.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (job, instance) (otelcol_process_memory_rss{job=~\"$job\"})", "legendFormat": "{{job}} — {{instance}}" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Process",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Collector CPU",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 19 },
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "sum by (job, instance) (rate(otelcol_process_cpu_seconds{job=~\"$job\"}[$__rate_interval]))", "legendFormat": "{{job}} — {{instance}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Uptime",
+      "description": "A sawtooth means the collector is restarting — usually an OOMKill or a rejected config.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 19 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 0, "lineWidth": 1, "showPoints": "never" } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "refId": "A", "expr": "max by (job, instance) (otelcol_process_uptime{job=~\"$job\"})", "legendFormat": "{{job}} — {{instance}}" }
+      ]
+    }
+  ]
+}

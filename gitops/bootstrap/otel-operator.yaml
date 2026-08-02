@@ -1,5 +1,5 @@
 # opentelemetry-operator — synced by the root app-of-apps. Sync wave 2 (installs the
-# OpenTelemetryCollector + Instrumentation CRDs that wave 3 depends on).
+# OpenTelemetryCollector + Instrumentation CRDs that the wave-4 collectors depend on).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

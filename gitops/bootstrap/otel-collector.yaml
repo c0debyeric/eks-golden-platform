@@ -1,12 +1,15 @@
-# otel-collector — plain manifests (OpenTelemetryCollector + Instrumentation CRs). Sync wave 3:
-# depends on the OTel Operator CRDs (wave 2) already existing.
+# otel-collector — plain manifests (OpenTelemetryCollector + Instrumentation CRs). Sync wave 4:
+# depends on the OTel Operator CRDs (wave 2) already existing, and — because both collectors set
+# observability.metrics.enableMetrics — on the ServiceMonitor CRD from kube-prometheus-stack
+# (wave 2). Moved from 3 to 4 to stay behind Loki/Tempo (wave 3), so the collector's exporters
+# have live backends to reach on its very first batch instead of logging connection refused.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: otel-collector
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-wave: "4"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:

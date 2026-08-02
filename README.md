@@ -22,7 +22,7 @@ reconciles the *entire* workload layer from this repo. Tear it all down with `ma
 
 - **One-command lifecycle** — `make up` provisions everything; `make down` returns you to ~$0.
 - **GitOps-native** — ArgoCD app-of-apps with sync-wave ordering; the whole workload layer is declarative.
-- **Full observability** — metrics, logs, and traces via OpenTelemetry → Prometheus, Loki, Tempo. Telemetry survives teardown (S3).
+- **Full observability** — metrics, logs, and traces through one OpenTelemetry pipeline → Prometheus, Loki, Tempo, with metric⇄trace⇄log correlation wired end-to-end and dashboards committed as code. The pipeline monitors itself. Telemetry survives teardown (S3).
 - **Secure by default** — EKS Pod Identity, Access Entries (no `aws-auth`), External Secrets (public-repo-safe — only pointers in Git), IMDSv2, KMS-encrypted secrets, private nodes.
 - **Cost-tunable** — flip between production-HA and a cheap demo posture with tfvars only, no code changes.
 - **Optional data tier** — RDS PostgreSQL (Multi-AZ primary + read replicas) in an isolated, no-egress subnet tier.
@@ -54,23 +54,26 @@ reconciles the *entire* workload layer from this repo. Tear it all down with `ma
 
 ```
 eks-golden-platform/
-├── Makefile                 # make up / down / status / argocd-ui / rds-info ...
+├── Makefile                 # make up / down / status / argocd-ui / grafana-ui / otel-status ...
 ├── renovate.json            # automated pin bumps (terraform + helm + argocd)
 ├── terraform/               # PLATFORM layer (disposable cluster)
 │   ├── network.tf           # VPC + 3-tier subnets (public/private/database)
 │   ├── cluster.tf           # EKS control plane + managed add-ons + bootstrap node group
 │   ├── compute.tf           # Karpenter AWS side (node IAM role, interruption queue)
 │   ├── iam.tf               # Pod Identity roles
-│   ├── storage.tf           # Loki + Tempo S3 buckets
+│   ├── storage.tf           # Loki + Tempo S3 buckets (+ lifecycle backstops)
 │   ├── rds.tf               # optional PostgreSQL (Multi-AZ + read replicas)
 │   ├── argocd.tf            # ArgoCD bootstrap + root app-of-apps (the handoff)
 │   └── bootstrap/           # ONE-TIME: S3 state bucket + GitHub OIDC CI role
 ├── gitops/                  # APPLICATION layer (GitOps, ArgoCD-managed)
 │   ├── bootstrap/           # one child Application per component (+ sync waves)
 │   └── apps/                # Helm values + plain manifests per component
+│       ├── otel-collector/  # OTLP gateway (Deployment) + log collector (DaemonSet) + RBAC
+│       └── grafana-dashboards/  # dashboards as code (ConfigMaps for the Grafana sidecar)
 ├── application/
 │   └── backend/             # OpenTelemetry-instrumented MCP server (TypeScript)
-├── scripts/                 # CI gates (e.g. CRD apiVersion contract check)
+├── scripts/                 # CI gates (CRD apiVersion + schema, kustomize overlays,
+│                            #           build arch, OTel collector pipeline configs)
 └── docs/                    # architecture diagram + research/reference
 ```
 
@@ -102,7 +105,12 @@ make status
 make argocd-ui          # https://localhost:8080
 make argocd-password    # initial admin password
 
-# 5. Tear it all down (~$0); S3 state + telemetry are retained
+# 5. Open Grafana — dashboards, logs and traces
+make grafana-ui         # http://localhost:3000
+make grafana-password   # admin credentials (via External Secrets)
+make otel-status        # confirm telemetry is actually flowing, not just running
+
+# 6. Tear it all down (~$0); S3 state + telemetry are retained
 make down
 ```
 
@@ -136,6 +144,48 @@ Idle              ~$0            (make down)
 > plane from ~$73/mo to ~$438/mo. Upgrade one minor at a time, control plane before charts.
 > See [`docs/research/01-eks-platform.md`](docs/research/01-eks-platform.md).
 
+## Observability
+
+One OpenTelemetry pipeline carries all three signals, so there is a single place that knows where
+each backend lives:
+
+```
+mcp-backend ──OTLP/HTTP──┐                        ┌── metrics ─(remote-write)─> Prometheus
+ (traces + metrics)      │                        │
+                         ├─> OTel gateway ────────┼── traces ──(OTLP/gRPC)────> Tempo  ─> S3
+ stdout (JSON logs)      │   (Deployment)         │
+      │                  │                        └── logs ────(OTLP/HTTP)────> Loki   ─> S3
+      └─> logs DaemonSet ┘
+          (/var/log/pods)                                   all three ──> Grafana
+```
+
+- **Logs** are never pushed over OTLP by the app. It writes structured JSON to stdout — which keeps
+  working when the process is wedged — and a per-node collector DaemonSet reads `/var/log/pods`,
+  parses the JSON, and forwards it through the gateway.
+- **Correlation is a closed loop.** The app stamps `trace_id`/`span_id` on every log line emitted
+  inside a span; the DaemonSet promotes them onto the OTLP log record; Loki stores them as
+  structured metadata. Grafana is wired for all four hops: metrics → traces (Prometheus
+  exemplars), traces → logs, logs → traces, and traces → metrics plus a service map (Tempo's
+  metrics-generator).
+- **The pipeline monitors itself.** Both collectors expose their own `otelcol_*` metrics, and the
+  *OpenTelemetry Pipeline Health* dashboard plus a set of alerts answer the question no
+  application dashboard can: *is telemetry actually arriving?* A collector that drops every batch
+  otherwise looks exactly like an idle cluster.
+- **Dashboards are code.** `gitops/apps/grafana-dashboards/` ships JSON as ConfigMaps that the
+  Grafana sidecar loads, so a dashboard change is a reviewed pull request rather than a click in a
+  UI whose database `make down` destroys. Two ship by default — *mcp-backend — Golden Signals* and
+  *OpenTelemetry Pipeline Health* — alongside the chart's Kubernetes dashboards and Loki's own.
+
+Retention is deliberately short and asymmetric: metrics 7d (8GB cap), logs 7d, traces 72h. Logs
+and traces live in S3 and survive `make down`; S3 lifecycle rules act as a backstop in case a
+compactor stops deleting, and abort orphaned multipart uploads left behind by an evicted pod.
+
+```bash
+make grafana-ui        # http://localhost:3000
+make grafana-password  # admin credentials
+make otel-status       # per-signal accepted/exported counts straight from the collector
+```
+
 ## Sample application — MCP backend
 
 `application/backend/` is a small, production-shaped **[Model Context Protocol](https://modelcontextprotocol.io)**
@@ -150,7 +200,9 @@ All workflows are **keyless** — GitHub Actions assumes an AWS role via OIDC ([
 
 - **`terraform`** — `fmt` + `validate` on every PR; a **GitOps contract** gate renders each pinned
   chart against its committed values and asserts every committed CR's `apiVersion` is actually
-  served by that chart; a scoped `terraform plan` runs on `main`.
+  served by that chart; the OTel collector pipelines are validated by running the pinned collector
+  binary in `validate` mode (the CRD keeps `spec.config` free-form, so nothing else checks it); a
+  scoped `terraform plan` runs on `main`.
 - **`build-image`** — builds and pushes the MCP backend image to ECR (immutable, SHA-tagged) on
   changes under `application/backend/`.
 

@@ -1,0 +1,26 @@
+# grafana-dashboards — plain ConfigMaps rendered by kustomize, discovered by the Grafana sidecar.
+#
+# Sync wave 3: after kube-prometheus-stack (wave 2) so Grafana and its sidecar already exist. The
+# sidecar would pick these up whenever they appeared, but ordering keeps `make up` deterministic
+# and keeps a first-boot cluster from briefly showing an empty dashboard list.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: grafana-dashboards
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/c0debyeric/eks-golden-platform.git
+    path: gitops/apps/grafana-dashboards
+    targetRevision: main
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]
