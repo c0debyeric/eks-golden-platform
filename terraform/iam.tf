@@ -140,8 +140,18 @@ resource "aws_iam_role_policy" "loki_s3" {
 }
 
 resource "aws_eks_pod_identity_association" "loki" {
-  cluster_name    = module.eks.cluster_name
-  namespace       = "loki"
+  cluster_name = module.eks.cluster_name
+  # MUST match the namespace the Loki chart actually deploys into, which is `logging`
+  # (gitops/bootstrap/loki.yaml -> destination.namespace). This previously said "loki",
+  # a namespace that does not exist, so the association matched nothing and the Loki pod
+  # received NO credentials at all.
+  #
+  # It went unnoticed for the same reason the rest of the log pipeline did: nothing was
+  # collecting container logs, so Loki never had a chunk to flush and never exercised S3.
+  # The bucket sat at zero objects while every component reported Healthy. It only surfaced
+  # once the compactor was enabled, because the compactor touches S3 during startup rather
+  # than lazily on first write, turning a silent misconfiguration into a crash loop.
+  namespace       = "logging"
   service_account = "loki"
   role_arn        = aws_iam_role.loki.arn
 }
