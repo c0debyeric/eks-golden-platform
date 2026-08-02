@@ -171,6 +171,31 @@ module "eks" {
       max_size       = 3
       desired_size   = 2
 
+      # The taint is what makes the "ONLY" above true. Without it this group is just the first
+      # place anything lands, and it drifted badly: by 2026-08-02 these two t3.medium nodes were
+      # carrying the entire observability data plane (prometheus-0, loki-0, tempo-0,
+      # alertmanager-0 -- four memory-hungry StatefulSets on 4GiB nodes) plus an mcp-stage
+      # APPLICATION pod, and sat at 17/17 and 16/17 pods with CPU at only 5-22%. Pod slots, not
+      # CPU, had become the binding constraint, and KubeletTooManyPods fired continuously.
+      #
+      # CriticalAddonsOnly is the conventional key for exactly this, and the cluster already
+      # agrees with it: Karpenter's chart sets this toleration by default, CoreDNS ships with it,
+      # and every platform DaemonSet tolerates all taints (operator: Exists) -- including the
+      # OTel logs collector, so tainting does NOT reintroduce the per-node logging blind spot.
+      # Measured before applying: 18 pods tolerate and stay, 16 relocate to Karpenter capacity.
+      #
+      # NOTE the effect is NO_SCHEDULE, which only blocks NEW placements; it does not evict what
+      # is already running. Applying this does not move anything on its own -- the existing pods
+      # have to be drained off deliberately. NO_EXECUTE would evict all 16 at once, including
+      # every observability StatefulSet simultaneously, which is a worse outage than the problem.
+      taints = {
+        critical_addons_only = {
+          key    = "CriticalAddonsOnly"
+          value  = "true"
+          effect = "NO_SCHEDULE"
+        }
+      }
+
       # IMDSv2 required + hop limit 1: a compromised pod can't reach IMDS to steal the node role.
       metadata_options = {
         http_tokens                 = "required"
