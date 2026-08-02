@@ -189,8 +189,25 @@ grafana:
           datasourceUid: prometheus
         nodeGraph:
           enabled: true
+        # Streaming search is DISABLED because this Tempo has no gRPC query endpoint to stream
+        # from. It runs monolithic with `server: {http_listen_port: 3200}` and no
+        # grpc_listen_port (gitops/apps/tempo/values.yaml), and the Service exposes no query
+        # gRPC port -- the grpc-* ports on it are INGEST (jaeger 14250, otlp 4317), not query.
+        #
+        # With search: true, Grafana spoke HTTP/2 to the HTTP/1.1 port and the datasource health
+        # check failed outright:
+        #   gRPC streaming call failed: rpc error: code = Unavailable ...
+        #   "error reading server preface: http2: frame too large, note that the frame header
+        #    looked like an HTTP/1.1 header"
+        # Traces were being collected and stored correctly the whole time -- Tempo's HTTP
+        # /api/search returns them -- so this looked like a tracing outage while only the
+        # Grafana transport was wrong.
+        #
+        # Re-enabling requires BOTH: set grpc_listen_port in Tempo's server config, expose it on
+        # the Service, and point the datasource at that port. Streaming only changes how results
+        # arrive (incrementally vs one response); HTTP search is fully functional without it.
         streamingEnabled:
-          search: true
+          search: false
   sidecar:
     dashboards:
       enabled: true          # auto-load ConfigMaps labeled grafana_dashboard=1
