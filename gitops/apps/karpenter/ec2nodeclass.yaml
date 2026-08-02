@@ -9,18 +9,18 @@ spec:
   amiSelectorTerms:
     - alias: al2023@latest
   role: eks-golden-karpenter       # stable node role name pinned in module.karpenter (main.tf)
-  # Karpenter does NOT read the VPC CNI's ENABLE_PREFIX_DELEGATION setting. Left unset it derives
-  # max-pods from raw ENI IP slots, which on the small instances this NodePool prefers means
-  # max-pods=8 on an m8g.medium — not even enough for the platform's own DaemonSets, and the
-  # reason the OTel logs collector could not schedule on one node. Prefix delegation (enabled on
-  # the vpc-cni addon in terraform/cluster.tf) raises the real ceiling to ~98 for that instance;
-  # this tells Karpenter it may use it.
+  # DO NOT set kubelet.maxPods here without first confirming the VPC CNI can actually back it.
+  # Tried exactly that (maxPods: 44) on 2026-08-02 and caused an outage: Karpenter launched a
+  # node advertising 44 pod slots, the scheduler filled them, and the CNI -- still in ENI-limited
+  # mode, because the prefix-delegation change had NOT actually applied -- could only supply 8 IPs.
+  # Every pod past the 8th sat in ContainerCreating with
+  #   "failed to assign an IP address to container",
+  # which took down ArgoCD and cert-manager since they had been rescheduled onto that node.
   #
-  # 44 rather than the usual 110: it clears the ceiling for every instance type this NodePool can
-  # pick while staying conservative on 1-2 vCPU nodes, where kubelet and container runtime
-  # overhead — not IP addresses — become the real limit.
-  kubelet:
-    maxPods: 44
+  # kubelet.maxPods is a PROMISE about capacity. If the CNI cannot honour it the scheduler
+  # overcommits the node and the pods that lose are invisible until you read kubelet events.
+  # Correct order if raising density: enable prefix delegation, VERIFY ENABLE_PREFIX_DELEGATION
+  # is true on the live aws-node DaemonSet, recycle nodes, and only then raise maxPods.
   subnetSelectorTerms:
     - tags:
         karpenter.sh/discovery: eks-golden

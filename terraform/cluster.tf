@@ -102,25 +102,17 @@ module "eks" {
     kube-proxy = {}
     # before_compute: ready before nodes join.
     #
-    # PREFIX DELEGATION: without it, max-pods is derived from ENI IP slots, which is brutal on the
-    # small instances this NodePool prefers — an m8g.medium gets max-pods=8. Five platform
-    # DaemonSets (CNI, kube-proxy, pod-identity-agent, ebs-csi-node, node-exporter) consume most
-    # of that, so the node can host 2-3 workload pods and cannot fit a sixth DaemonSet at all.
-    # That is how the OTel logs collector ended up permanently Pending on one node.
-    #
-    # Prefix delegation assigns /28 prefixes instead of individual IPs, raising the same instance
-    # to ~98 pods. NOTE: max-pods is fixed at node bootstrap, so this only affects nodes created
-    # AFTER it is applied — existing nodes must be recycled. Karpenter does not read this setting
-    # either; its density is set explicitly via kubelet.maxPods in the EC2NodeClass.
-    vpc-cni = {
-      before_compute = true
-      configuration_values = jsonencode({
-        env = {
-          ENABLE_PREFIX_DELEGATION = "true"
-          WARM_PREFIX_TARGET       = "1"
-        }
-      })
-    }
+    # NOT enabling prefix delegation here (yet). Small instances get a low ENI-derived max-pods
+    # (an m8g.medium gets 8), which is genuinely tight once the platform's own DaemonSets are
+    # counted, and prefix delegation is the right long-term answer. But it is NOT a drop-in edit:
+    #   - max-pods is fixed at node bootstrap, so it changes nothing until nodes are recycled;
+    #   - Karpenter does not read the CNI setting, so its density must be raised separately;
+    #   - doing those two in the wrong order overcommits nodes and strands pods with
+    #     "failed to assign an IP address to container" (see the warning in
+    #     gitops/apps/karpenter/ec2nodeclass.yaml -- this is not hypothetical).
+    # It needs a planned rollout: enable, verify on the live DaemonSet, recycle, then raise
+    # maxPods. Until then the logs DaemonSet's PriorityClass is what guarantees coverage.
+    vpc-cni                = { before_compute = true }
     aws-ebs-csi-driver     = {} # PVCs for Prometheus/Loki/Grafana
     eks-pod-identity-agent = {} # REQUIRED for Pod Identity
     metrics-server         = {} # HPA + kubectl top
