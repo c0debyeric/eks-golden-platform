@@ -102,25 +102,61 @@ module "eks" {
     kube-proxy = {}
     # before_compute: ready before nodes join.
     #
-    # NOT enabling prefix delegation here (yet). Small instances get a low ENI-derived max-pods
-    # (an m8g.medium gets 8), which is genuinely tight once the platform's own DaemonSets are
-    # counted, and prefix delegation is the right long-term answer. But it is NOT a drop-in edit:
-    #   - max-pods is fixed at node bootstrap, so it changes nothing until nodes are recycled;
-    #   - Karpenter does not read the CNI setting, so its density must be raised separately;
-    #   - doing those two in the wrong order overcommits nodes and strands pods with
-    #     "failed to assign an IP address to container" (see the warning in
-    #     gitops/apps/karpenter/ec2nodeclass.yaml -- this is not hypothetical).
-    # It needs a planned rollout: enable, verify on the live DaemonSet, recycle, then raise
-    # maxPods. Until then the logs DaemonSet's PriorityClass is what guarantees coverage.
+    # PREFIX DELEGATION. Without it the CNI hands out individual secondary IPs, so max-pods is
+    # ENI-limited: every 1-vCPU m*.medium the NodePool can pick tops out at 8 pods, and roughly
+    # six of those are the platform's own DaemonSets. Prefix delegation assigns /28 blocks
+    # instead, taking that same instance to 98.
     #
-    # Apply this addon on its own with an EXPLICIT plan file, never an ad-hoc -target:
-    #   terraform plan  -target='module.eks.aws_eks_addon.this["vpc-cni"]' -out=cni.tfplan
-    #   terraform apply cni.tfplan
-    # A plan file makes the blast radius reviewable before it executes. The 2026-08-02 outage
-    # began because a shell line-continuation had a trailing space, so -target silently never
-    # reached terraform and an intended one-resource change ran as a full auto-approved apply,
-    # rolling the bootstrap node group's AMI as a side effect.
-    vpc-cni                = { before_compute = true }
+    # ORDER MATTERS, and getting it wrong caused the 2026-08-02 outage. This setting only takes
+    # effect on nodes created AFTER it applies (max-pods is fixed at kubelet bootstrap), and
+    # Karpenter does NOT inspect the CNI to discover it -- confirmed in Karpenter's own
+    # troubleshooting guide, which pairs "enable prefix delegation" with "set maxPods". So the
+    # EC2NodeClass carries an explicit kubelet.maxPods. Apply in this order, no shortcuts:
+    #   1. apply THIS (prefix delegation on the addon)
+    #   2. verify on the live DaemonSet -- the addon reporting ACTIVE is not sufficient proof:
+    #        kubectl get ds aws-node -n kube-system \
+    #          -o jsonpath='{.spec.template.spec.containers[0].env}' | grep PREFIX_DELEGATION
+    #   3. only then raise kubelet.maxPods in gitops/apps/karpenter/ec2nodeclass.yaml
+    #   4. recycle nodes one at a time
+    # Reversing 2 and 3 makes kubelet advertise capacity the CNI cannot back; the scheduler
+    # fills the node and every pod past the real IP limit hangs in ContainerCreating with
+    # "failed to assign an IP address to container".
+    #
+    # THE ADDRESS OF THIS ADDON IS NOT WHAT YOU EXPECT. Because before_compute = true, the
+    # module declares it in a SEPARATE resource block, so its state address is
+    #   module.eks.aws_eks_addon.before_compute["vpc-cni"]      <-- correct
+    #   module.eks.aws_eks_addon.this["vpc-cni"]                <-- does NOT exist
+    # Confirm before targeting anything: terraform state list | grep addon
+    #
+    # That mistake is what caused the 2026-08-02 outage, and the way it failed is worth
+    # understanding. The apply used -target=...aws_eks_addon.this["vpc-cni"]. No such instance
+    # exists, so prefix delegation was never planned -- but the run was NOT a no-op. -target
+    # is not a scalpel: it pulls in the target's DEPENDENCIES, and the after-compute
+    # aws_eks_addon.this block depends on the managed node group. The node group had an
+    # unrelated pending AMI bump, so that rode along and rolled the fleet. Terraform printed
+    # "Apply complete! Resources: 0 added, 1 changed, 0 destroyed" -- the 1 was the node group,
+    # not the addon. The roll evicted ArgoCD and cert-manager onto a node whose kubelet had
+    # already been told maxPods=44 by a CNI that was still ENI-limited to 8.
+    #
+    # Two habits prevent a repeat:
+    #   1. Plan into a file and read WHICH resources it lists, then apply that exact file:
+    #        terraform plan -target='module.eks.aws_eks_addon.before_compute["vpc-cni"]' \
+    #          -out=cni.tfplan
+    #        terraform apply cni.tfplan
+    #      "Apply complete!" says nothing about WHICH resource changed. The plan file does.
+    #   2. Verify the effect on the live DaemonSet, not the addon's ACTIVE status (step 2 above).
+    #
+    # WARM_PREFIX_TARGET=1 keeps exactly one spare /28 per node: enough to absorb a burst
+    # without reserving a second block on every node in the fleet.
+    vpc-cni = {
+      before_compute = true
+      configuration_values = jsonencode({
+        env = {
+          ENABLE_PREFIX_DELEGATION = "true"
+          WARM_PREFIX_TARGET       = "1"
+        }
+      })
+    }
     aws-ebs-csi-driver     = {} # PVCs for Prometheus/Loki/Grafana
     eks-pod-identity-agent = {} # REQUIRED for Pod Identity
     metrics-server         = {} # HPA + kubectl top

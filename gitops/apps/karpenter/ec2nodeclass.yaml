@@ -9,20 +9,29 @@ spec:
   amiSelectorTerms:
     - alias: al2023@latest
   role: eks-golden-karpenter       # stable node role name pinned in module.karpenter (main.tf)
-  # DO NOT set kubelet.maxPods here without first confirming the VPC CNI can actually back it.
-  # Tried exactly that (maxPods: 44) on 2026-08-02 and caused an outage: Karpenter launched a
-  # node advertising 44 pod slots, the scheduler filled them, and the CNI -- still in ENI-limited
-  # mode, because the prefix-delegation change had NOT actually applied -- could only supply 8 IPs.
-  # Confirm with the live DaemonSet, which is the only source of truth here:
-  #   kubectl get ds aws-node -n kube-system -o jsonpath='{.spec.template.spec.containers[0].env}'
-  # Every pod past the 8th sat in ContainerCreating with
-  #   "failed to assign an IP address to container",
-  # which took down ArgoCD and cert-manager since they had been rescheduled onto that node.
+  # Karpenter derives max-pods from raw ENI IP slots and does NOT inspect the VPC CNI, so it
+  # cannot discover prefix delegation on its own (Karpenter's own troubleshooting guide pairs
+  # "enable prefix delegation" with "set maxPods"). Unset, every 1-vCPU m*.medium this NodePool
+  # can pick would cap at 8 pods -- roughly six of which are the platform's own DaemonSets.
   #
-  # kubelet.maxPods is a PROMISE about capacity. If the CNI cannot honour it the scheduler
-  # overcommits the node and the pods that lose are invisible until you read kubelet events.
-  # Correct order if raising density: enable prefix delegation, VERIFY ENABLE_PREFIX_DELEGATION
-  # is true on the live aws-node DaemonSet, recycle nodes, and only then raise maxPods.
+  # 44 is bounded by measurement, not taste. Across all 656 instance types this NodePool can
+  # select, the LOWEST pod capacity with prefix delegation is 98 (the 1-vCPU m*.medium tier);
+  # every other type is 110. 44 therefore leaves >2x headroom on the worst case. Recompute with
+  # min(110, maxENI * ((ipv4PerENI - 1) * 16) + 2) from `aws ec2 describe-instance-types`
+  # before raising it, and re-check if the NodePool's instance constraints are ever widened.
+  #
+  # PRECONDITION -- this value is only safe while prefix delegation is actually live. Setting it
+  # on 2026-08-02 while the CNI was still ENI-limited to 8 caused an outage: kubelet advertised
+  # 44 slots, the scheduler filled them, and every pod past the 8th hung in ContainerCreating
+  # with "failed to assign an IP address to container", taking down ArgoCD and cert-manager.
+  # maxPods is a PROMISE about capacity; if the CNI cannot honour it the node is overcommitted
+  # and the pods that lose are invisible unless you read kubelet events. Verify before trusting:
+  #   kubectl get ds aws-node -n kube-system \
+  #     -o jsonpath='{.spec.template.spec.containers[0].env}' | grep ENABLE_PREFIX_DELEGATION
+  # If that is ever false, this block must come out BEFORE any node is recycled.
+  # max-pods is fixed at kubelet bootstrap, so changes here only affect newly created nodes.
+  kubelet:
+    maxPods: 44
   subnetSelectorTerms:
     - tags:
         karpenter.sh/discovery: eks-golden
