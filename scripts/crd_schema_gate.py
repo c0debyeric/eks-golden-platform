@@ -124,6 +124,24 @@ def main(argv: list[str]) -> int:
         )
         return 1
 
+    # Fail closed on an empty run. Every manifest lookup that misses a CRD is skipped, so a
+    # CRD file that is empty or from the wrong chart validates NOTHING and still reports PASS.
+    # Hit exactly that on 2026-08-02: `helm template --include-crds` emits no CRDs for the
+    # karpenter chart (they ship in crds/, which only `helm pull --untar` materialises -- what
+    # CI does). The gate printed "PASS: 0 manifest(s)" and looked green. A gate that cannot
+    # tell "everything is valid" from "I checked nothing" is worse than no gate, because it
+    # is trusted. If this fires, suspect how the CRD file was produced, not the manifests.
+    if checked == 0:
+        print(
+            f"\nFAIL: validated 0 manifests against {crd_file}.\n"
+            f"  Manifests given: {', '.join(manifests)}\n"
+            "  Their apiVersion/kind matched no CustomResourceDefinition in that file, so\n"
+            "  nothing was actually checked. Verify the CRD file is non-empty and came from\n"
+            "  the right chart -- karpenter ships CRDs in crds/, which requires\n"
+            "  `helm pull --untar` (`helm template --include-crds` does NOT emit them)."
+        )
+        return 1
+
     print(f"\nPASS: {checked} manifest(s) valid against the pinned chart's CRD schema")
     return 0
 
