@@ -12,7 +12,33 @@ metadata:
   namespace: observability
 spec:
   mode: deployment
-  replicas: 1
+  # Two replicas, not one. Every signal in the cluster funnels through this Deployment, so a
+  # single replica makes it a total telemetry outage on any disruption -- and disruption is
+  # routine here, not exceptional: the NodePool is spot-first with
+  # consolidationPolicy: WhenEmptyOrUnderutilized, so nodes are reclaimed and consolidated
+  # continuously. This pod was in fact restarted during a node recycle on 2026-08-02, and the
+  # gap is invisible after the fact: the collector buffers in memory, so telemetry from the
+  # outage window is simply gone rather than delayed. Safe to scale because the gateway is
+  # push-only (OTLP receivers, no scrape receiver), so replicas cannot duplicate a scrape, and
+  # k8sattributes resolves senders per-connection.
+  replicas: 2
+  # Stops the two replicas being drained together -- by consolidation, a node roll, or an
+  # upgrade. Without this a PDB-less Deployment can go to zero available during voluntary
+  # disruption, which is exactly the outage the second replica is meant to prevent.
+  podDisruptionBudget:
+    maxUnavailable: 1
+  # A PDB is worthless if both replicas share a node, because the disruption that matters here
+  # is losing the NODE. Preferred rather than required: on a small cluster a hard constraint
+  # would leave the second replica Pending, trading a rare outage for a permanent one.
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: gateway-collector
   serviceAccount: otel-collector      # see rbac.yaml — k8sattributes needs API read access
   resources:
     requests: { cpu: 100m, memory: 192Mi }
