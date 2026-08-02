@@ -23,22 +23,33 @@ spec:
   # k8sattributes resolves senders per-connection.
   replicas: 2
   # Stops the two replicas being drained together -- by consolidation, a node roll, or an
-  # upgrade. Without this a PDB-less Deployment can go to zero available during voluntary
-  # disruption, which is exactly the outage the second replica is meant to prevent.
+  # upgrade. The operator already created a PDB with these semantics by default; stating it
+  # here makes it explicit and version-controlled rather than an implicit operator behaviour.
+  # Note a PDB alone never protected anything while replicas was 1: maxUnavailable: 1 against a
+  # single replica permits evicting the only pod. It only becomes meaningful with two.
   podDisruptionBudget:
     maxUnavailable: 1
-  # A PDB is worthless if both replicas share a node, because the disruption that matters here
-  # is losing the NODE. Preferred rather than required: on a small cluster a hard constraint
-  # would leave the second replica Pending, trading a rare outage for a permanent one.
-  affinity:
-    podAntiAffinity:
-      preferredDuringSchedulingIgnoredDuringExecution:
-        - weight: 100
-          podAffinityTerm:
-            topologyKey: kubernetes.io/hostname
-            labelSelector:
-              matchLabels:
-                app.kubernetes.io/name: gateway-collector
+  # Spreading is what actually delivers the availability; the PDB only governs voluntary
+  # eviction. Both replicas initially landed on the SAME node under a *preferred* anti-affinity
+  # rule, because the two bootstrap nodes were full and preferred rules are silently discarded
+  # when they cannot be met -- two replicas, one failure domain, no real redundancy.
+  #
+  # DoNotSchedule is safe here specifically because Karpenter provisions for unschedulable
+  # pods: an unplaceable replica becomes a pending pod, which is a signal Karpenter acts on,
+  # not a permanent stall. On a fixed-size cluster this would be the wrong choice.
+  #
+  # matchLabelKeys scopes the skew calculation to the ReplicaSet being rolled out. Without it,
+  # DoNotSchedule deadlocks on upgrade: the new pod counts the outgoing pod as occupying its
+  # domain and can never place.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+      matchLabelKeys:
+        - pod-template-hash
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: gateway-collector
   serviceAccount: otel-collector      # see rbac.yaml — k8sattributes needs API read access
   resources:
     requests: { cpu: 100m, memory: 192Mi }
