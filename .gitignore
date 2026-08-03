@@ -37,6 +37,7 @@ secrets.yaml
 
 # dependencies
 /node_modules
+node_modules/   
 /.pnp
 .pnp.*
 .yarn/*
@@ -51,6 +52,7 @@ secrets.yaml
 # next.js
 /.next/
 /out/
+.next/   
 
 # production
 /build
