@@ -1,10 +1,66 @@
 import Image from "next/image";
+import ApiKeySection from "./ApiKeySection";
+
+
+type UserGreeting = {
+
+  name: String;
+};
+
+function getUserName(name: String): String {
+  // Replace this with your logic to get the user's name
+  if (name.trim() === "") {
+    return "Guest";
+  }
+  else return name;
+}
+
+
+const GreetUser = ({name}: UserGreeting) => {
+  return (
+    <div className="flex flex-col items-center gap-6 text-center">
+      <h1 className="text-5xl font-bold text-black dark:text-white">
+        Hello and welcome, {getUserName(name)}!
+      </h1>
+          <p className="font-bold text-2xl text-zinc-600 dark:text-zinc-400">
+          Get started now and generate your very own API key!
+        </p>
+      </div>
+  );
+}
 
 export default function Home() {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
+    <div className="min-h-screen  bg-zinc-50 font-sans dark:bg-black">
+      {/* <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-evenly py-32 px-16 bg-white dark:bg-black "> */}
+      <main className="flex flex-col ">
+        {/* <div className = "flex min-h-screen items-center justify-center">
+          <Image
+          className="dark:invert min-h-screen"
+          src="/next.svg"
+          alt="Next.js logo"
+          width={100}
+          height={20}
+          priority
+        />
+        </div> */}
+        {/* <Image
+          className="dark:invert min-h-screen"
+          src="/next.svg"
+          alt="Next.js logo"
+          width={100}
+          height={20}
+          priority
+        /> */}
+        <div className = "flex min-h-screen flex-col items-center justify-center">
+          <GreetUser 
+        name = {""}
+        />        
+          <ApiKeySection />                
+        </div>
+        
+        
+        {/* <Image
           className="dark:invert"
           src="/next.svg"
           alt="Next.js logo"
@@ -59,7 +115,7 @@ export default function Home() {
           >
             Documentation
           </a>
-        </div>
+        </div> */}
       </main>
     </div>
   );
