@@ -1,39 +1,42 @@
-# Build & push the mcp-backend container image to Amazon ECR.
+# Build & push the application container images to Amazon ECR.
 #
 # Keyless, same model as terraform.yml: the job mints a GitHub OIDC token and
-# exchanges it for short-lived AWS creds by assuming the repo's CI role
+# exchanges it for short-lived AWS credentials by assuming the repo's CI role
 # (vars.AWS_ROLE_ARN). No static registry credentials are stored.
 #
-# The OIDC role trust is scoped to ref:refs/heads/main, so this only runs on
-# main (and manual dispatch from main). Images are tagged by immutable git SHA.
+# The OIDC role trust is scoped to ref:refs/heads/main, so this only runs on main
+# (and manual dispatch from main). Images are tagged by immutable git SHA.
+#
+# WHY a MATRIX rather than two near-identical jobs: backend and frontend differ
+# only in their build context and ECR repository. Duplicating ~150 lines of
+# workflow is how the arch list, the OIDC role or the tag-exists guard ends up
+# fixed in one and forgotten in the other.
 name: build-image
 
 on:
   push:
     branches: [main]
     paths:
-      - "application/backend/**"
+      - "application/**"
+      - "charts/**"
       - ".github/workflows/build-image.yml"
   workflow_dispatch: {}
 
 # Serialise runs per commit. WHY: the tag is the 12-char git SHA and ECR tags are
-# IMMUTABLE, so two concurrent runs for the same commit (e.g. a push plus a manual
-# workflow_dispatch, which is exactly what happened on 2026-07-29) both pass the
-# "does this tag exist yet" check, both build, and the loser dies with:
-#   failed to push ...: The image tag 'a7b96ed603df' already exists ... and cannot be
-#   overwritten because the tag is immutable
-# That reads like a workflow bug but is really a race. cancel-in-progress is deliberately
-# FALSE: the in-flight run may already have pushed, and cancelling it mid-push would leave
-# a partially-exported manifest. Queueing lets the second run reach the existence check
-# and skip cleanly instead.
+# IMMUTABLE, so two concurrent runs for the same commit (e.g. a push plus a
+# manual workflow_dispatch, which is exactly what happened on 2026-07-29) both
+# pass the "does this tag exist yet" check, both build, and the loser dies with:
+#   failed to push ...: The image tag 'a7b96ed603df' already exists ... and
+#   cannot be overwritten because the tag is immutable
+# That reads like a workflow bug but is really a race. cancel-in-progress is
+# deliberately FALSE: the in-flight run may already have pushed, and cancelling
+# it mid-push would leave a partially-exported manifest. Queueing lets the second
+# run reach the existence check and skip cleanly instead.
 concurrency:
   group: build-image-${{ github.sha }}
   cancel-in-progress: false
 
 # Required for OIDC (id-token), checkout (contents), and the automated dev-pin PR.
-# contents: write + pull-requests: write are needed by create-pull-request to push the
-# deploy/dev-* branch and open the PR. Still no packages: write -- the image goes to ECR
-# via OIDC, not to GHCR.
 permissions:
   contents: write
   pull-requests: write
@@ -41,17 +44,72 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REPOSITORY: mcp-backend
 
 jobs:
-  build-push:
-    # OIDC trust only allows main; guard manual dispatch on other branches.
+  changes:
+    # Only build what actually changed. Without this, a frontend-only commit
+    # rebuilds the backend and opens a dev-pin PR moving it to a new digest for
+    # no reason — which churns the pin on untouched code and destroys the
+    # "prod runs the bytes stage validated" property.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
     steps:
       - uses: actions/checkout@v7
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            backend:
+              - 'application/backend/**'
+              - 'charts/mcp-backend/**'
+            frontend:
+              - 'application/frontend/**'
+              - 'charts/mcp-frontend/**'
+
+  build-push:
+    needs: changes
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      # Independent images to independent repositories: one failing must not
+      # cancel the other's push half-way.
+      fail-fast: false
+      matrix:
+        include:
+          - app: backend
+            repository: mcp-backend
+            context: application/backend
+            chart: charts/mcp-backend
+            values: gitops/apps/mcp-backend/values-dev.yaml
+            valuesDir: gitops/apps/mcp-backend
+            changed: ${{ needs.changes.outputs.backend }}
+          - app: frontend
+            repository: mcp-frontend
+            context: application/frontend
+            chart: charts/mcp-frontend
+            values: gitops/apps/mcp-frontend/values-dev.yaml
+            valuesDir: gitops/apps/mcp-frontend
+            changed: ${{ needs.changes.outputs.frontend }}
+    steps:
+      # A manual dispatch rebuilds everything; a push builds only what changed.
+      - name: Decide whether this app needs building
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ matrix.changed }}" = "true" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No changes under ${{ matrix.context }} — skipping."
+          fi
+
+      - uses: actions/checkout@v7
+        if: steps.gate.outputs.run == 'true'
 
       - name: Configure AWS credentials (OIDC)
+        if: steps.gate.outputs.run == 'true'
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }} # repo variable, from bootstrap output
@@ -59,23 +117,24 @@ jobs:
           role-session-name: gha-image-${{ github.run_id }}
 
       # Idempotent: create the repo on first run (IMMUTABLE tags + scan-on-push).
-      # Prefer moving this to terraform/bootstrap if you want it fully IaC-managed.
       - name: Ensure ECR repository exists
+        if: steps.gate.outputs.run == 'true'
         run: |
-          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1 || \
+          aws ecr describe-repositories --repository-names "${{ matrix.repository }}" >/dev/null 2>&1 || \
           aws ecr create-repository \
-            --repository-name "$ECR_REPOSITORY" \
+            --repository-name "${{ matrix.repository }}" \
             --image-tag-mutability IMMUTABLE \
             --image-scanning-configuration scanOnPush=true \
             --encryption-configuration encryptionType=AES256 >/dev/null
-          echo "ECR repository ready: $ECR_REPOSITORY"
+          echo "ECR repository ready: ${{ matrix.repository }}"
 
       # Tags are IMMUTABLE, so a re-run on the same commit would fail the push.
       # Detect an existing tag and skip the build instead (idempotent re-runs).
       - name: Check if image tag already exists
         id: exists
+        if: steps.gate.outputs.run == 'true'
         run: |
-          if aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+          if aws ecr describe-images --repository-name "${{ matrix.repository }}" \
                --image-ids imageTag="${GITHUB_SHA::12}" >/dev/null 2>&1; then
             echo "found=true" >> "$GITHUB_OUTPUT"
             echo "Tag ${GITHUB_SHA::12} already exists — skipping build."
@@ -85,10 +144,12 @@ jobs:
 
       - name: Login to Amazon ECR
         id: ecr
+        if: steps.exists.outputs.found == 'false'
         uses: aws-actions/amazon-ecr-login@v2
 
-      # QEMU provides the arm64 emulation buildx needs to cross-compile on an amd64 runner.
-      # Without it the linux/arm64 leg fails outright ("exec format error" during build).
+      # QEMU provides the arm64 emulation buildx needs to cross-compile on an
+      # amd64 runner. Without it the linux/arm64 leg fails outright ("exec format
+      # error" during build).
       - name: Set up QEMU
         if: steps.exists.outputs.found == 'false'
         uses: docker/setup-qemu-action@v4
@@ -99,8 +160,9 @@ jobs:
 
       - name: Compute image reference
         id: meta
+        if: steps.exists.outputs.found == 'false'
         run: |
-          IMAGE="${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}"
+          IMAGE="${{ steps.ecr.outputs.registry }}/${{ matrix.repository }}"
           echo "tag=${IMAGE}:${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
@@ -108,86 +170,82 @@ jobs:
         if: steps.exists.outputs.found == 'false'
         uses: docker/build-push-action@v7
         with:
-          context: application/backend
+          context: ${{ matrix.context }}
           push: true
           tags: ${{ steps.meta.outputs.tag }}
           # MULTI-ARCH is mandatory here, not an optimisation.
           #
-          # The Karpenter NodePool deliberately allows kubernetes.io/arch In [amd64, arm64]
-          # to pick up cheaper Graviton capacity, and this Deployment sets no nodeSelector,
-          # so a pod can legitimately land on either. An amd64-only image scheduled onto an
-          # arm64 node does NOT fail to pull -- it pulls fine and then dies at exec with:
+          # The Karpenter NodePool deliberately allows kubernetes.io/arch In
+          # [amd64, arm64] to pick up cheaper Graviton capacity, and neither
+          # Deployment sets a nodeSelector, so a pod can legitimately land on
+          # either. An amd64-only image scheduled onto an arm64 node does NOT
+          # fail to pull -- it pulls fine and then dies at exec with
           #   exec /usr/local/bin/docker-entrypoint.sh: exec format error
-          # which reads like a broken entrypoint rather than an architecture mismatch, and
-          # only reproduces when the scheduler happens to choose ARM. Observed live on an
-          # m9gd.medium node 2026-07-29.
-          #
-          # Building both arches keeps the Graviton cost saving AND makes placement a
-          # non-issue. The alternative -- pinning the Deployment to amd64 -- would forfeit
-          # the cheaper capacity the NodePool was configured to use.
+          # which reads like a broken entrypoint rather than an architecture
+          # mismatch, and only reproduces when the scheduler happens to choose
+          # ARM. Observed live on an m9gd.medium node 2026-07-29.
           platforms: linux/amd64,linux/arm64
           provenance: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Scope the layer cache per app, or the two builds evict each other's
+          # entries every run and neither ever gets a hit.
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
 
-      # Seed the DEV overlay with what was just built. This is the write-back step whose
-      # absence was the real defect: previously the workflow pushed an image and then asked
-      # a HUMAN to hand-edit deployment.yaml, so nothing consumed the build and the
-      # committed placeholder (REPLACE_WITH_GIT_SHA) stayed live -- leaving mcp-backend
-      # Degraded on InvalidImageName indefinitely.
+      # Seed the DEV values file with what was just built. This write-back is what
+      # makes a build actually reach a cluster; without it the committed pin never
+      # moves and the workload silently keeps running an older image.
       #
       # WHY only dev, never stage/prod: a push to main must not be able to change
-      # production. Moving further along the chain is the promote.yml workflow's job, which
-      # requires an explicit dispatch and opens a reviewable PR. Build auto-delivers to dev
-      # and stops there.
+      # production. Moving further along the chain is promote.yml's job, which
+      # requires an explicit dispatch and opens a reviewable PR.
       #
-      # WHY a PR rather than a direct push to main: a direct push from a workflow either
-      # needs branch-protection bypass or silently fails on a protected main. A PR is also
-      # the audit record of which build produced which dev deploy.
-      - name: Pin dev overlay to the new image
+      # WHY a PR rather than a direct push to main: a direct push from a workflow
+      # either needs branch-protection bypass or silently fails on a protected
+      # main. The PR is also the audit record of which build produced which deploy.
+      - name: Pin dev values to the new image
         if: steps.exists.outputs.found == 'false'
         run: |
           set -euo pipefail
-          DST=gitops/apps/mcp-backend/overlays/dev/kustomization.yaml
-          # `digest` (not `newDigest` -- kustomize rejects that field) is authoritative;
-          # newTag is kept alongside it for human readability in the rendered image ref.
           TAG="${GITHUB_SHA::12}" \
           DIGEST='${{ steps.build.outputs.digest }}' \
-          yq -i '(.images[] | select(.name == "PLACEHOLDER_IMAGE"))
-                   |= (.newTag = strenv(TAG) | .digest = strenv(DIGEST))' "$DST"
-          kubectl kustomize gitops/apps/mcp-backend/overlays/dev >/dev/null
-          python3 scripts/kustomize_overlay_gate.py gitops/apps/mcp-backend
+          yq -i '.image.tag = strenv(TAG) | .image.digest = strenv(DIGEST)' \
+            "${{ matrix.values }}"
+          # Prove the chart still renders with the new pin BEFORE opening a PR.
+          helm template "${{ matrix.app }}" "${{ matrix.chart }}" \
+            -f "${{ matrix.values }}" --namespace mcp-dev >/dev/null
+          python3 scripts/helm_values_gate.py "${{ matrix.chart }}" "${{ matrix.valuesDir }}"
 
       - name: Open dev pin pull request
         if: steps.exists.outputs.found == 'false'
         uses: peter-evans/create-pull-request@v8
         with:
-          branch: deploy/dev-${{ github.sha }}
+          branch: deploy/${{ matrix.app }}-dev-${{ github.sha }}
           delete-branch: true
-          title: "deploy(dev): ${{ github.sha }}"
+          title: "deploy(dev): ${{ matrix.repository }} ${{ github.sha }}"
           commit-message: |
-            deploy(dev): pin mcp-backend to ${{ github.sha }}
+            deploy(dev): pin ${{ matrix.repository }} to ${{ github.sha }}
 
-            Automated write-back from build-image.yml. Promotion to stage/prod is a
-            separate, explicitly dispatched decision (see .github/workflows/promote.yml).
+            Automated write-back from build-image.yml. Promotion to stage/prod is
+            a separate, explicitly dispatched decision (see promote.yml).
           body: |
             Automated dev pin from `build-image.yml`.
 
             | | |
             |---|---|
+            | App | `${{ matrix.repository }}` |
             | Tag | `${{ github.sha }}` |
             | Digest | `${{ steps.build.outputs.digest }}` |
 
             Promote onward with the **promote** workflow (`dev → stage`, then `stage → prod`).
 
       - name: Job summary
+        if: steps.exists.outputs.found == 'false'
         run: |
           {
-            echo "### mcp-backend image pushed"
+            echo "### ${{ matrix.repository }} image pushed"
             echo ""
             echo "- Image: \`${{ steps.meta.outputs.tag }}\`"
             echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
             echo ""
-            echo "A PR pinning the **dev** overlay to this image was opened automatically."
-            echo "Promote onward with the \`promote\` workflow (dev → stage → prod)."
+            echo "A PR pinning the **dev** values file to this image was opened automatically."
           } >> "$GITHUB_STEP_SUMMARY"

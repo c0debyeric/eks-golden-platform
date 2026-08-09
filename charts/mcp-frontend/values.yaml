@@ -1,0 +1,91 @@
+# Default values for mcp-frontend.
+#
+# Environment-agnostic only. Per-environment overrides live in
+# gitops/apps/mcp-frontend/values-<env>.yaml.
+
+replicaCount: 2
+
+image:
+  repository: 810749429738.dkr.ecr.us-east-1.amazonaws.com/mcp-frontend
+  # Empty on purpose — the chart refuses to render unpinned. See _helpers.tpl.
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+
+# Public entrypoint via the AWS Load Balancer Controller.
+#
+# HTTP only and no certificate for now: an internet-facing ALB on :80. There is
+# no domain yet, so cert-manager/ACM would have nothing to issue against. The
+# consequence is explicit — API keys transit this listener in cleartext — so this
+# is acceptable for a demo tenant and MUST gain TLS before real credentials.
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    # 'ip' mode targets pod IPs directly. 'instance' mode would require a
+    # NodePort Service, and Karpenter recycling nodes then churns the target
+    # group constantly.
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /api/health
+    # Without a shared group each Ingress provisions its OWN ALB (~$16/mo each).
+    # Grouping keeps one load balancer across environments.
+    alb.ingress.kubernetes.io/group.name: eks-golden
+  # No host rule: matches any Host header, which is what you want before a domain
+  # exists. Add `host:` here once DNS is in place.
+  host: ""
+  path: /
+  pathType: Prefix
+
+resources:
+  requests:
+    cpu: 50m
+    # Next.js server-side rendering is markedly heavier than the backend's
+    # request handling; 96Mi (the backend's request) OOMKills it during render.
+    memory: 192Mi
+  limits:
+    memory: 512Mi
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+environment: ""
+
+backend:
+  # In-cluster DNS name of the mcp-backend Service. Overridden per environment
+  # because each environment has its own namespace.
+  url: ""
+
+# Single fixed tenant until an identity provider is wired up. Resolved
+# server-side, never supplied by the browser.
+appOwner: demo
+
+securityContext:
+  pod:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  container:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+topologySpread:
+  enabled: true
+  maxSkew: 1
+  topologyKey: topology.kubernetes.io/zone
+  whenUnsatisfiable: ScheduleAnyway
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

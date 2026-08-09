@@ -18,8 +18,10 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import express, { type Request, type Response } from "express";
 
 import { config } from "./config.js";
+import { closePool, isHealthy, migrate } from "./db.js";
 import { logger } from "./logger.js";
 import { buildMcpServer } from "./mcp.js";
+import { apiRouter } from "./routes.js";
 import { shutdownTelemetry } from "./telemetry.js";
 
 const app = express();
@@ -76,9 +78,67 @@ app.post(config.mcpPath, async (req: Request, res: Response) => {
 app.get(config.mcpPath, methodNotAllowed);
 app.delete(config.mcpPath, methodNotAllowed);
 
-// Kubernetes probes. Liveness = process is up; readiness = ready for traffic.
+// REST surface for the Next.js frontend (API key CRUD, backed by RDS).
+app.use("/api", apiRouter);
+
+// Kubernetes probes.
+//
+// LIVENESS is deliberately database-INDEPENDENT: if it checked Postgres, an RDS
+// failover or a brief connection blip would make the kubelet kill and restart
+// every replica simultaneously, turning a ~2-minute recoverable event into a
+// CrashLoopBackOff across the whole Deployment. The process being up is the only
+// thing a restart can fix, so that is all liveness asserts.
 app.get("/healthz", (_req, res) => res.status(200).json({ status: "ok" }));
-app.get("/readyz", (_req, res) => res.status(200).json({ status: "ready" }));
+
+// READINESS does check the database: a replica that cannot reach Postgres cannot
+// serve /api, so it should be pulled from the Service endpoints — but left
+// running, so it rejoins automatically once the database returns.
+app.get("/readyz", async (_req, res) => {
+  if (!schemaReady) {
+    res.status(503).json({ status: "degraded", reason: "schema migration pending" });
+    return;
+  }
+  if (await isHealthy()) {
+    res.status(200).json({ status: "ready" });
+  } else {
+    res.status(503).json({ status: "degraded", reason: "database unreachable" });
+  }
+});
+
+// Declared before migrateWithRetry runs: the retry loop reads `shuttingDown` on
+// its very first synchronous iteration, so a `let` declared further down would
+// be in the temporal dead zone and throw ReferenceError at startup.
+let shuttingDown = false;
+
+// Bring the schema up to date before accepting traffic.
+//
+// WHY this does not block listen(): if it did, a database outage would stop the
+// pod from ever binding a port, so the kubelet's liveness probe would fail and
+// restart it forever — a database problem escalated into a crash loop. Instead
+// the server starts, readiness reports 503 until migration succeeds, and the
+// retry loop keeps trying.
+let schemaReady = false;
+
+async function migrateWithRetry(): Promise<void> {
+  for (let attempt = 1; !shuttingDown; attempt += 1) {
+    try {
+      await migrate();
+      schemaReady = true;
+      return;
+    } catch (err) {
+      // Cap the backoff so a long outage does not push retries hours apart.
+      const delayMs = Math.min(30_000, 2 ** Math.min(attempt, 5) * 1000);
+      logger.error("schema migration failed; retrying", {
+        attempt,
+        delayMs,
+        error: (err as Error).message,
+      });
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
+void migrateWithRetry();
 
 const httpServer = app.listen(config.port, () => {
   const { port } = httpServer.address() as AddressInfo;
@@ -87,19 +147,22 @@ const httpServer = app.listen(config.port, () => {
     mcpPath: config.mcpPath,
     environment: config.environment,
     otlpEndpoint: config.otel.endpoint,
+    // Host only — never the password, and never a full connection string.
+    database: `${config.database.host}:${config.database.port}/${config.database.name}`,
     instanceId: randomUUID(),
   });
 });
-
-let shuttingDown = false;
 
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info("shutting down", { signal });
 
-  // Stop accepting new connections, then flush telemetry.
+  // Stop accepting new connections, then drain the pool and flush telemetry.
   await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+  await closePool().catch((err) =>
+    logger.error("failed to close the database pool", { error: (err as Error).message }),
+  );
   await shutdownTelemetry();
 
   logger.info("shutdown complete");

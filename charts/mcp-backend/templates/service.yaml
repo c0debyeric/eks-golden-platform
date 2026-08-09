@@ -1,0 +1,19 @@
+{{- /*
+ClusterIP only. An unauthenticated MCP server must not be exposed publicly; the
+frontend reaches this Service by in-cluster DNS. To expose it, front it with auth
+(MCP spec: OAuth 2.1) first.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "mcp-backend.fullname" . }}
+  labels:
+    {{- include "mcp-backend.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "mcp-backend.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http

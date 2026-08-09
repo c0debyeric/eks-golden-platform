@@ -1,0 +1,159 @@
+{{- /*
+mcp-backend Deployment.
+
+Telemetry is PUSHED by the explicit OTel SDK to the gateway collector, so there
+is no inject-* annotation and no ServiceMonitor: metrics/traces reach
+Prometheus/Tempo via the OTLP pipeline, and logs reach Loki from container stdout
+through the node-level collector DaemonSet.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mcp-backend.fullname" . }}
+  labels:
+    {{- include "mcp-backend.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "mcp-backend.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "mcp-backend.labels" . | nindent 8 }}
+      annotations:
+        {{- /*
+        Roll the pods when the database credentials change. The Secret is written
+        by External Secrets Operator, and a Secret consumed via secretKeyRef is
+        read ONLY at container start — so after a credential rotation the pods
+        keep using the old password until something restarts them, and the
+        failure appears hours later as authentication errors with no deploy to
+        correlate against. Hashing the ExternalSecret spec makes rotation a
+        rollout.
+        */}}
+        checksum/db-externalsecret: {{ include (print $.Template.BasePath "/externalsecret.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.securityContext.pod | nindent 8 }}
+      containers:
+        - name: {{ include "mcp-backend.name" . }}
+          image: {{ include "mcp-backend.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: OTEL_SERVICE_NAME
+              value: {{ include "mcp-backend.name" . }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otel.endpoint | quote }}
+            - name: OTEL_DEPLOYMENT_ENVIRONMENT
+              value: {{ include "mcp-backend.environment" . | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- /*
+            $(POD_NAME) is expanded by the KUBELET from the env var above, not by
+            Helm. It must survive templating literally.
+            */}}
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace={{ .Release.Namespace }},k8s.namespace.name={{ .Release.Namespace }},k8s.pod.name=$(POD_NAME)"
+
+            {{- /*
+            Database connection, sourced field-by-field from the ESO-managed
+            Secret. Discrete secretKeyRefs rather than one assembled
+            DATABASE_URL: building a URL would require the password as a literal
+            in the pod spec, which puts it in `kubectl describe` output and in
+            Argo CD's rendered manifest diff.
+            */}}
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.secretName }}
+                  key: host
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.secretName }}
+                  key: port
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.secretName }}
+                  key: dbname
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.secretName }}
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.secretName }}
+                  key: password
+            - name: PGSSL
+              value: {{ .Values.database.sslMode | quote }}
+            - name: PG_POOL_MAX
+              value: {{ .Values.database.poolMax | quote }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          readinessProbe:
+            {{- /*
+            Readiness checks the database, so a pod that cannot reach RDS leaves
+            the Service endpoints but keeps running. failureThreshold is
+            generous: Multi-AZ failover takes ~2 minutes and must not be
+            escalated into a restart storm.
+            */}}
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            {{- /* Process-only. Never database-dependent — see src/index.ts. */}}
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          securityContext:
+            {{- toYaml .Values.securityContext.container | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # readOnlyRootFilesystem is on, so the process needs a writable scratch dir.
+        - name: tmp
+          emptyDir: {}
+      {{- if .Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpread.maxSkew }}
+          topologyKey: {{ .Values.topologySpread.topologyKey }}
+          whenUnsatisfiable: {{ .Values.topologySpread.whenUnsatisfiable }}
+          {{- /*
+          matchLabelKeys pins the constraint to THIS pod template revision.
+          Without it, a rolling update counts the outgoing pods when placing the
+          incoming ones, the spread looks satisfied, and the rollout can deadlock.
+          */}}
+          matchLabelKeys:
+            - pod-template-hash
+          labelSelector:
+            matchLabels:
+              {{- include "mcp-backend.selectorLabels" . | nindent 14 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,22 +1,26 @@
-# ApplicationSet: one Argo CD Application per environment for the mcp-backend workload.
+# ApplicationSet: one Argo CD Application per environment for the mcp-backend
+# workload, rendered from the Helm chart in charts/mcp-backend.
 #
-# WHY an ApplicationSet instead of three hand-written Application YAMLs: the three envs
-# differ in exactly four values (namespace, overlay path, syncPolicy, sync wave). Hand-
-# maintaining three near-identical 30-line manifests is how the syncOptions on one env
-# drift from the others — and a missing ServerSideApply or CreateNamespace only surfaces
-# at sync time as an opaque "one or more synchronization tasks are not valid".
+# WHY an ApplicationSet rather than three hand-written Application manifests: the
+# three environments differ in exactly four values (namespace, values file, sync
+# policy, sync wave). Hand-maintaining three near-identical 40-line manifests is
+# how a syncOption on one environment drifts from the others — and a missing
+# ServerSideApply or CreateNamespace only surfaces at sync time as an opaque
+# "one or more synchronization tasks are not valid".
 #
-# WHY the LIST generator and not the git-directory generator: a directory generator would
-# auto-discover overlays/* and silently create a full Application for any new directory.
-# For envs that is a footgun — an experimental overlay committed for local testing would
-# self-deploy to the cluster. The list is explicit: three envs, reviewed, no surprises.
+# WHY the LIST generator and not a git-directory generator: a directory generator
+# auto-discovers paths and would silently create a full Application for any new
+# directory, so an experimental values file committed for local testing would
+# self-deploy. The list is explicit: three environments, reviewed, no surprises.
 #
-# WHY app-of-apps is retained above this: this ApplicationSet is itself discovered by the
-# existing `root` Application (path gitops/bootstrap, recurse:true), so the bootstrap
-# contract is unchanged. ApplicationSets replace the repetitive per-env Application, not
-# the app-of-apps root.
-#
-# Docs: https://argo-cd.readthedocs.io/en/stable/operator-manual/applicationset/Generators-List/
+# WHY TWO SOURCES rather than putting values-<env>.yaml inside the chart:
+# Argo CD refuses `valueFiles` paths that escape the chart directory, so an
+# environment file living outside charts/ cannot be referenced from a single
+# source. The `ref` mechanism is the supported way to combine "chart from here,
+# values from there". Keeping environment config in gitops/ and the chart in
+# charts/ means the chart stays a reusable artifact with no environment knowledge
+# baked in, and CI patches only the values file.
+# Docs: https://argo-cd.readthedocs.io/en/stable/user-guide/multiple_sources/
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
@@ -31,9 +35,10 @@ spec:
   generators:
     - list:
         elements:
-          # Wave 5 matches the pre-split app: after otel-operator (2) and the gateway
-          # collector (4), so the OTLP endpoint exists before pods start. Envs then
-          # roll in order dev -> stage -> prod.
+          # Wave 5: after otel-operator (2) and the gateway collector (4), so the
+          # OTLP endpoint exists before pods start, and after external-secrets (1)
+          # and its config (2), so the database Secret is materialised before the
+          # Deployment references it. Environments roll dev -> stage -> prod.
           - env: dev
             namespace: mcp-dev
             wave: "5"
@@ -46,44 +51,67 @@ spec:
 
   template:
     metadata:
-      # Names become mcp-backend-dev / -stage / -prod.
       name: mcp-backend-{{.env}}
       annotations:
         argocd.argoproj.io/sync-wave: "{{.wave}}"
       finalizers:
-        # Ensures deleting the Application cascades to its workloads instead of orphaning
+        # Deleting the Application cascades to its workloads instead of orphaning
         # them in the namespace.
         - resources-finalizer.argocd.argoproj.io
     spec:
       project: default
-      source:
-        repoURL: https://github.com/c0debyeric/eks-golden-platform.git
-        # Each env points at its own kustomize overlay; the shared base is pulled in by
-        # the overlay's `resources:` so there is exactly one copy of the manifests.
-        path: gitops/apps/mcp-backend/overlays/{{.env}}
-        targetRevision: main
+      sources:
+        # The chart. Environment-agnostic; carries no dev/stage/prod knowledge.
+        - repoURL: https://github.com/c0debyeric/eks-golden-platform.git
+          path: charts/mcp-backend
+          targetRevision: main
+          helm:
+            releaseName: mcp-backend
+            valueFiles:
+              # $values resolves to the ref'd source below.
+              - $values/gitops/apps/mcp-backend/values-{{.env}}.yaml
+        # Values-only source. `ref` makes the repo available for valueFiles
+        # lookups WITHOUT Argo CD trying to render its contents as manifests —
+        # omitting `ref` (or adding a `path`) makes Argo attempt to apply the
+        # whole repository.
+        - repoURL: https://github.com/c0debyeric/eks-golden-platform.git
+          targetRevision: main
+          ref: values
       destination:
         server: https://kubernetes.default.svc
         namespace: "{{.namespace}}"
       syncPolicy:
         syncOptions:
           - CreateNamespace=true # the mcp-* namespaces are created on first sync
-          # ServerSideApply avoids the 262144-byte client-side apply annotation cap. Not
-          # strictly required at this manifest size, but kept uniform with the platform
-          # apps so a future large CRD or config blob does not fail only in one env.
+          # ServerSideApply avoids the 262144-byte client-side apply annotation
+          # cap. Not strictly required at this manifest size, but kept uniform
+          # with the platform apps so a future large config blob does not fail in
+          # only one environment.
           - ServerSideApply=true
+      ignoreDifferences:
+        # The ExternalSecret CRD defaults many optional fields server-side
+        # (conversionStrategy, decodingStrategy, metadataPolicy,
+        # target.deletionPolicy) that are not in our minimal manifest. Argo CD
+        # would otherwise report those injected defaults as perpetual drift and
+        # selfHeal would fight the API server forever.
+        - group: external-secrets.io
+          kind: ExternalSecret
+          jsonPointers:
+            - /spec/data
+            - /spec/target
+            - /spec/refreshInterval
 
   # PROMOTION GATE, expressed as a template PATCH rather than an inline conditional.
   #
-  # dev and stage get automated sync (prune + selfHeal). prod deliberately gets NO
-  # `automated` block: a merged promotion PR changes Git, then a human triggers the sync.
-  # WHY: auto-sync on prod makes `git merge` and `deploy to production` the same
-  # irreversible action, removing the last checkpoint before customer traffic moves.
-  # selfHeal off also means an emergency kubectl mitigation is not reverted out from
-  # under the operator mid-incident.
+  # dev and stage get automated sync (prune + selfHeal). prod deliberately gets
+  # NO `automated` block: a merged promotion PR changes Git, then a human triggers
+  # the sync. Auto-syncing prod would make `git merge` and `deploy to production`
+  # the same irreversible action, removing the last checkpoint before customer
+  # traffic moves. selfHeal off also means an emergency kubectl mitigation is not
+  # reverted out from under the operator mid-incident.
   #
-  # templatePatch is applied after the template renders, so this stays valid YAML in Git
-  # and is reviewable — unlike a {{- if }} wrapped around a mapping key.
+  # templatePatch is applied after the template renders, so this stays valid YAML
+  # in Git and is reviewable — unlike a {{- if }} wrapped around a mapping key.
   templatePatch: |
     {{- if ne .env "prod" }}
     spec:

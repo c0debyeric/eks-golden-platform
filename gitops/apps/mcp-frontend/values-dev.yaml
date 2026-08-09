@@ -1,0 +1,28 @@
+# dev environment for mcp-frontend (namespace mcp-dev).
+#
+# Cheapest environment: 1 replica, no PDB (minAvailable:1 on a single replica
+# blocks eviction outright and deadlocks Karpenter consolidation).
+#
+# Dev is the ONLY environment with the Ingress enabled. All three environments
+# would otherwise join the same ALB group with a path-`/` rule and no host rule,
+# and the group's rule ordering — not intent — would decide which environment a
+# visitor reaches. Enable stage/prod here only once each has a real hostname.
+environment: dev
+
+replicaCount: 1
+
+podDisruptionBudget:
+  enabled: false
+
+ingress:
+  enabled: true
+
+# In-cluster DNS of this environment's backend. Namespace-qualified so it cannot
+# accidentally resolve to another environment's backend.
+backend:
+  url: http://mcp-backend.mcp-dev.svc.cluster.local
+
+# Rewritten by the build-image workflow. Pinned by digest as well as tag.
+image:
+  tag: bootstrap
+  digest: ""

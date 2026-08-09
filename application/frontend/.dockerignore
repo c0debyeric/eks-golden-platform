@@ -1,0 +1,14 @@
+# Keep the build context small and, more importantly, keep local secrets and
+# stale build output from ever entering an image layer.
+node_modules
+.next
+out
+npm-debug.log*
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+Dockerfile
+.dockerignore
+README.md

@@ -18,6 +18,11 @@ const list = (value: string | undefined): string[] =>
     .map((item) => item.trim())
     .filter(Boolean);
 
+const int = (value: string | undefined, fallback: number): number => {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
 export const config = {
   serviceName: process.env.OTEL_SERVICE_NAME ?? "mcp-backend",
   serviceVersion: process.env.npm_package_version ?? "0.1.0",
@@ -34,6 +39,28 @@ export const config = {
       process.env.OTEL_EXPORTER_OTLP_ENDPOINT ??
       "http://gateway-collector.observability.svc:4318",
     debug: bool(process.env.OTEL_DEBUG, false),
+  },
+
+  /**
+   * PostgreSQL (Amazon RDS). Host/port/dbname/user/password are supplied as
+   * DISCRETE variables rather than one DATABASE_URL because that is the shape
+   * External Secrets Operator produces from the `eks-golden/rds-master` secret
+   * — the Secrets Manager JSON has separate `host`, `port`, `username`,
+   * `password`, `dbname` keys. Assembling a URL would mean templating a
+   * password into a string in the manifest, which puts it in the pod spec and
+   * therefore in `kubectl describe` output. Discrete secretKeyRefs keep it out.
+   */
+  database: {
+    host: process.env.PGHOST ?? "127.0.0.1",
+    port: int(process.env.PGPORT, 5432),
+    name: process.env.PGDATABASE ?? "postgres",
+    user: process.env.PGUSER ?? "postgres",
+    password: process.env.PGPASSWORD ?? "",
+    /** TLS is on by default; only disable for a local docker-compose Postgres. */
+    ssl: bool(process.env.PGSSL, true),
+    /** Path to the Amazon RDS CA bundle mounted by the Helm chart. */
+    caFile: process.env.PGSSLROOTCERT ?? "",
+    poolMax: int(process.env.PG_POOL_MAX, 5),
   },
 } as const;
 

@@ -1,0 +1,20 @@
+apiVersion: v2
+name: mcp-backend
+description: |
+  OpenTelemetry-instrumented MCP server and API-key REST service, backed by
+  Amazon RDS PostgreSQL. Source lives in application/backend.
+type: application
+
+# version  = the CHART's version. Bump it when the templates change.
+# appVersion = the APPLICATION's version. The running image is pinned by digest
+# in the per-environment values file, not by appVersion — appVersion is metadata
+# only, and treating it as the deployment pin is how charts end up shipping an
+# image nobody chose.
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - mcp
+  - opentelemetry
+  - postgres
+home: https://github.com/c0debyeric/eks-golden-platform

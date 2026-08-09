@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mcp-frontend.fullname" . }}
+  labels:
+    {{- include "mcp-frontend.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "mcp-frontend.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "mcp-frontend.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.securityContext.pod | nindent 8 }}
+      containers:
+        - name: {{ include "mcp-frontend.name" . }}
+          image: {{ include "mcp-frontend.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            {{- /*
+            The standalone Next server binds localhost unless HOSTNAME is set.
+            It is also set in the Dockerfile; repeated here so the manifest is
+            self-evident and survives a base-image change.
+            */}}
+            - name: HOSTNAME
+              value: "0.0.0.0"
+            - name: NODE_ENV
+              value: production
+            {{- /*
+            Server-side only. This never reaches the browser: the frontend
+            proxies API calls through its own route handlers, so the backend
+            Service stays unreachable from outside the cluster.
+            */}}
+            - name: BACKEND_URL
+              value: {{ include "mcp-frontend.backendUrl" . | quote }}
+            - name: APP_OWNER
+              value: {{ .Values.appOwner | quote }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            {{- /*
+            Next.js standalone takes noticeably longer to serve its first request
+            than the backend does. A 3s initial delay (the backend's value) makes
+            the first probe fail every rollout and adds a needless restart-looking
+            event to the timeline.
+            */}}
+            initialDelaySeconds: 8
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            {{- toYaml .Values.securityContext.container | nindent 12 }}
+          volumeMounts:
+            {{- /*
+            readOnlyRootFilesystem is on. Next writes its runtime image/render
+            cache under .next/cache, so that path needs to be writable or the
+            server 500s on first render rather than failing at startup.
+            */}}
+            - name: tmp
+              mountPath: /tmp
+            - name: next-cache
+              mountPath: /app/.next/cache
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: next-cache
+          emptyDir: {}
+      {{- if .Values.topologySpread.enabled }}
+      topologySpreadConstraints:
+        - maxSkew: {{ .Values.topologySpread.maxSkew }}
+          topologyKey: {{ .Values.topologySpread.topologyKey }}
+          whenUnsatisfiable: {{ .Values.topologySpread.whenUnsatisfiable }}
+          matchLabelKeys:
+            - pod-template-hash
+          labelSelector:
+            matchLabels:
+              {{- include "mcp-frontend.selectorLabels" . | nindent 14 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

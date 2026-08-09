@@ -1,0 +1,88 @@
+# Default values for mcp-backend.
+#
+# These are the ENVIRONMENT-AGNOSTIC defaults. Everything that differs between
+# dev/stage/prod (replica count, image digest, resources, OTel environment tag)
+# is overridden by gitops/apps/mcp-backend/values-<env>.yaml, which the Argo CD
+# ApplicationSet layers on top. Nothing here should ever be environment-specific.
+
+replicaCount: 2
+
+image:
+  repository: 810749429738.dkr.ecr.us-east-1.amazonaws.com/mcp-backend
+  # Deliberately EMPTY. The chart refuses to render without a per-environment
+  # pin (see _helpers.tpl), because a default tag here is the value every
+  # environment silently inherits when its values file is wrong — which is
+  # exactly how the old PLACEHOLDER_IMAGE sentinel reached the cluster.
+  tag: ""
+  # Digest is authoritative when set; the tag is kept alongside for readability.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+
+# The MCP endpoint is unauthenticated, so the Service stays ClusterIP and there
+# is no Ingress in this chart at all. Exposing it would require OAuth 2.1 per the
+# MCP spec; a `ingress.enabled` flag here would make that a one-line mistake.
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 96Mi
+  limits:
+    # No CPU limit on purpose: CPU is compressible, and a limit here causes
+    # throttling under burst rather than protecting anything. Memory is not
+    # compressible, so it is capped.
+    memory: 192Mi
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Environment tag applied to traces/metrics. MUST be overridden per environment —
+# left at a shared value, dev telemetry is indistinguishable from production's.
+environment: ""
+
+otel:
+  endpoint: http://gateway-collector.observability.svc:4318
+
+database:
+  # Secrets Manager entry holding the RDS master credentials, projected into the
+  # namespace as a Kubernetes Secret by External Secrets Operator.
+  secretsManagerKey: eks-golden/rds-master
+  externalSecret:
+    enabled: true
+    # The ClusterSecretStore created in gitops/apps/external-secrets.
+    storeName: aws-secrets-manager
+    refreshInterval: 1h
+  # Name of the Kubernetes Secret ESO writes and the Deployment consumes.
+  secretName: mcp-backend-db
+  sslMode: "true"
+  poolMax: 5
+
+securityContext:
+  pod:
+    runAsNonRoot: true
+    runAsUser: 1000 # the 'node' user baked into the image
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  container:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+# Best-effort AZ spread. ScheduleAnyway, not DoNotSchedule: this workload must
+# still schedule when a zone is short on capacity.
+topologySpread:
+  enabled: true
+  maxSkew: 1
+  topologyKey: topology.kubernetes.io/zone
+  whenUnsatisfiable: ScheduleAnyway
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

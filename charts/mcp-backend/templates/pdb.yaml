@@ -1,0 +1,27 @@
+{{- /*
+Keep at least one replica serving during voluntary disruptions (node drains,
+Karpenter consolidation, rolling upgrades).
+
+The guard below is the important part. A PDB with minAvailable >= replicaCount
+BLOCKS eviction outright: Karpenter consolidation and `kubectl drain` wait
+forever for a replacement pod that can never exist. That is not a theoretical
+edge case — it is exactly why the dev overlay had to delete its PDB. Encoding the
+rule in the chart means a future single-replica environment cannot reintroduce
+the deadlock by forgetting to disable it.
+*/ -}}
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- if ge (int .Values.podDisruptionBudget.minAvailable) (int .Values.replicaCount) }}
+{{- fail (printf "podDisruptionBudget.minAvailable (%d) must be less than replicaCount (%d), or evictions deadlock. Set podDisruptionBudget.enabled=false for single-replica environments." (int .Values.podDisruptionBudget.minAvailable) (int .Values.replicaCount)) }}
+{{- end }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "mcp-backend.fullname" . }}
+  labels:
+    {{- include "mcp-backend.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "mcp-backend.selectorLabels" . | nindent 6 }}
+{{- end }}

@@ -1,0 +1,36 @@
+# prod environment for mcp-frontend (namespace mcp-prod).
+#
+# 3 replicas so losing one AZ still leaves 2 serving, and minAvailable 2 so
+# consolidation cannot drain down to a single pod. Higher memory ceiling than the
+# chart default, which is sized for an idle dev pod.
+#
+# Ingress disabled until prod has a real hostname AND TLS. Serving API keys over
+# the plain-HTTP demo listener is acceptable for dev; it is not for prod.
+#
+# Prod's Argo CD Application has no `automated` syncPolicy: merging a promotion
+# PR changes desired state, and a human then triggers the sync.
+environment: prod
+
+replicaCount: 3
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+ingress:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 768Mi
+
+backend:
+  url: http://mcp-backend.mcp-prod.svc.cluster.local
+
+# Rewritten by the promote workflow on a stage -> prod promotion.
+image:
+  tag: bootstrap
+  digest: ""

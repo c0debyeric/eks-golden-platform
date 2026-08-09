@@ -1,0 +1,22 @@
+# dev overlay for mcp-backend (namespace mcp-dev).
+#
+# Cheapest environment: 1 replica and NO PodDisruptionBudget. A PDB with
+# minAvailable:1 on a single-replica Deployment blocks eviction outright, so
+# Karpenter consolidation and node drains stall forever waiting for a second pod
+# that never exists. Dev is also the environment we most want Karpenter free to
+# bin-pack aggressively, so the PDB is disabled rather than tuned.
+environment: dev
+
+replicaCount: 1
+
+podDisruptionBudget:
+  enabled: false
+
+# Promotion target. The build-image workflow rewrites tag+digest HERE ONLY —
+# never in the chart's own values.yaml, and never in stage/prod.
+#
+# Pinned by DIGEST as well as tag: a digest is immutable by construction, so the
+# artifact promoted onward is provably the identical bytes dev validated.
+image:
+  tag: a7b96ed603df
+  digest: sha256:feeeae5e3c0764a2d79f34bbac1150c568a0f0e93c102f01d341b2631bd75761

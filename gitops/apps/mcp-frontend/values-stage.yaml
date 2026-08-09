@@ -1,0 +1,26 @@
+# stage environment for mcp-frontend (namespace mcp-stage).
+#
+# Production rehearsal: 2 replicas and the PDB retained, so rolling-update
+# readiness gaps and drain deadlocks surface here rather than in prod.
+#
+# Ingress stays DISABLED until stage has its own hostname — see the note in
+# values-dev.yaml about ALB group rule collisions. Reach it with
+# `kubectl port-forward -n mcp-stage svc/mcp-frontend 3000:80` meanwhile.
+environment: stage
+
+replicaCount: 2
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+ingress:
+  enabled: false
+
+backend:
+  url: http://mcp-backend.mcp-stage.svc.cluster.local
+
+# Rewritten by the promote workflow on a dev -> stage promotion.
+image:
+  tag: bootstrap
+  digest: ""

@@ -23,17 +23,38 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
+# ── certs: the Amazon RDS trust bundle ───────────────────────────────────────
+# RDS presents a certificate chained to an Amazon RDS root CA that is NOT in the
+# system trust store. The usual "fix" is rejectUnauthorized:false, which yields a
+# connection that is encrypted but UNAUTHENTICATED — indistinguishable from a
+# working one, and MITM-able by anything on the path inside the VPC. Baking the
+# real bundle in lets pg verify properly (see src/db.ts).
+#
+# The global bundle covers every region, so this image stays region-agnostic.
+FROM ${NODE_IMAGE} AS certs
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL --retry 3 \
+        https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+        -o /tmp/rds-global-bundle.pem \
+    # Assert we got a certificate and not an error page or a truncated body —
+    # a corrupt bundle would otherwise only surface as a TLS failure at runtime.
+    && grep -q "BEGIN CERTIFICATE" /tmp/rds-global-bundle.pem
+
 # ── runtime: minimal image, non-root, no build toolchain ─────────────────────
 FROM ${NODE_IMAGE} AS runtime
 ENV NODE_ENV=production \
     PORT=8080 \
-    OTEL_SERVICE_NAME=mcp-backend
+    OTEL_SERVICE_NAME=mcp-backend \
+    PGSSLROOTCERT=/app/certs/rds-global-bundle.pem
 WORKDIR /app
 
 # The official Node image ships an unprivileged `node` user (uid 1000).
 COPY --chown=node:node package.json ./
 COPY --from=deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=certs --chown=node:node /tmp/rds-global-bundle.pem ./certs/rds-global-bundle.pem
 
 USER node
 EXPOSE 8080

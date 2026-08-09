@@ -1,0 +1,33 @@
+{{- /*
+Public entrypoint, provisioned by the AWS Load Balancer Controller.
+
+Ingresses sharing `group.name` are merged into ONE ALB. That is a cost decision
+(an ALB per Ingress is ~$16/mo each) but it has a correctness consequence worth
+stating: rules from every member Ingress land on the same listener, so two
+environments both matching path `/` with no host rule would collide and the
+group's rule ordering would decide the winner non-obviously. Only ONE environment
+should enable this Ingress until real hostnames exist.
+*/ -}}
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "mcp-frontend.fullname" . }}
+  labels:
+    {{- include "mcp-frontend.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml .Values.ingress.annotations | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - {{ if .Values.ingress.host }}host: {{ .Values.ingress.host | quote }}
+      {{ end }}http:
+        paths:
+          - path: {{ .Values.ingress.path }}
+            pathType: {{ .Values.ingress.pathType }}
+            backend:
+              service:
+                name: {{ include "mcp-frontend.fullname" . }}
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}

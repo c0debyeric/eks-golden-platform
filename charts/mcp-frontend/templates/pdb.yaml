@@ -1,0 +1,17 @@
+{{- /* See the pdb guard rationale in charts/mcp-backend/templates/pdb.yaml. */ -}}
+{{- if .Values.podDisruptionBudget.enabled }}
+{{- if ge (int .Values.podDisruptionBudget.minAvailable) (int .Values.replicaCount) }}
+{{- fail (printf "podDisruptionBudget.minAvailable (%d) must be less than replicaCount (%d), or evictions deadlock. Set podDisruptionBudget.enabled=false for single-replica environments." (int .Values.podDisruptionBudget.minAvailable) (int .Values.replicaCount)) }}
+{{- end }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "mcp-frontend.fullname" . }}
+  labels:
+    {{- include "mcp-frontend.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "mcp-frontend.selectorLabels" . | nindent 6 }}
+{{- end }}

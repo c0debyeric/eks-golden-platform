@@ -1,0 +1,15 @@
+apiVersion: v2
+name: mcp-frontend
+description: |
+  Next.js web UI for API key management. Talks to mcp-backend over in-cluster
+  DNS; holds no database credentials of its own. Source lives in
+  application/frontend.
+type: application
+
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - nextjs
+  - frontend
+home: https://github.com/c0debyeric/eks-golden-platform

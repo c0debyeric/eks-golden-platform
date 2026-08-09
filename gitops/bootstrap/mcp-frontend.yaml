@@ -1,0 +1,69 @@
+# ApplicationSet: one Argo CD Application per environment for the mcp-frontend
+# workload, rendered from the Helm chart in charts/mcp-frontend.
+#
+# Mirrors gitops/bootstrap/mcp-backend.yaml exactly — same generator, same
+# two-source layout, same promotion gate. See that file for the reasoning behind
+# each choice; keeping the two identical is deliberate so a fix to one is
+# obviously applicable to the other.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: mcp-frontend
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+
+  generators:
+    - list:
+        elements:
+          # One wave BEHIND the matching backend environment (backend dev is 5,
+          # frontend dev is 6). The frontend's first render calls the backend, so
+          # starting it first produces a burst of 502s and a readiness flap that
+          # looks like a frontend defect. Sharing a wave would be a race.
+          - env: dev
+            namespace: mcp-dev
+            wave: "6"
+          - env: stage
+            namespace: mcp-stage
+            wave: "7"
+          - env: prod
+            namespace: mcp-prod
+            wave: "8"
+
+  template:
+    metadata:
+      name: mcp-frontend-{{.env}}
+      annotations:
+        argocd.argoproj.io/sync-wave: "{{.wave}}"
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: default
+      sources:
+        - repoURL: https://github.com/c0debyeric/eks-golden-platform.git
+          path: charts/mcp-frontend
+          targetRevision: main
+          helm:
+            releaseName: mcp-frontend
+            valueFiles:
+              - $values/gitops/apps/mcp-frontend/values-{{.env}}.yaml
+        - repoURL: https://github.com/c0debyeric/eks-golden-platform.git
+          targetRevision: main
+          ref: values
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "{{.namespace}}"
+      syncPolicy:
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+
+  templatePatch: |
+    {{- if ne .env "prod" }}
+    spec:
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+    {{- end }}

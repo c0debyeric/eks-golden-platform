@@ -1,0 +1,21 @@
+# stage overlay for mcp-backend (namespace mcp-stage).
+#
+# Stage is a production REHEARSAL, so it keeps 2 replicas, the PDB and the
+# topology spread. A single-replica stage cannot catch the two failure classes
+# that only appear with more than one pod — rolling-update readiness gaps, and
+# PDB/drain deadlocks — which are precisely the defects worth finding before prod.
+#
+# The only intentional differences from prod are resource headroom and the
+# promotion gate: stage auto-syncs, prod does not.
+environment: stage
+
+replicaCount: 2
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Rewritten by the promote workflow on a dev -> stage promotion.
+image:
+  tag: a7b96ed603df
+  digest: sha256:feeeae5e3c0764a2d79f34bbac1150c568a0f0e93c102f01d341b2631bd75761

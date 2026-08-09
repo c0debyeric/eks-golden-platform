@@ -13,6 +13,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import { config } from "./config.js";
+import { createApiKey, listApiKeys, revokeApiKey } from "./apiKeys.js";
 import { logger } from "./logger.js";
 
 const tracer = trace.getTracer(config.serviceName, config.serviceVersion);
@@ -110,6 +111,70 @@ export function buildMcpServer(): McpServer {
         timeZone,
       }).format(now);
       return text(formatted);
+    }),
+  );
+
+  // ── API key tools (RDS-backed) ────────────────────────────────────────────
+  // Same table the REST API serves, so a key minted by an agent shows up in the
+  // web UI and vice versa.
+
+  server.registerTool(
+    "create_api_key",
+    {
+      title: "Create API key",
+      description:
+        "Issue a new API key. The plaintext key is returned ONCE and is not recoverable afterwards.",
+      inputSchema: {
+        name: z.string().min(1).max(120).describe("Human-readable label for the key"),
+        owner: z.string().min(1).max(128).describe("Owner the key belongs to"),
+      },
+    },
+    instrument("create_api_key", async ({ name, owner }) => {
+      const created = await createApiKey(name, owner);
+      return text(
+        JSON.stringify(
+          { id: created.id, name: created.name, owner: created.owner, key: created.key },
+          null,
+          2,
+        ),
+      );
+    }),
+  );
+
+  server.registerTool(
+    "list_api_keys",
+    {
+      title: "List API keys",
+      description:
+        "List an owner's API keys. Returns metadata only — key material is never retrievable.",
+      inputSchema: {
+        owner: z.string().min(1).max(128).describe("Owner whose keys to list"),
+      },
+    },
+    instrument("list_api_keys", async ({ owner }) =>
+      text(JSON.stringify(await listApiKeys(owner), null, 2)),
+    ),
+  );
+
+  server.registerTool(
+    "revoke_api_key",
+    {
+      title: "Revoke API key",
+      description: "Revoke an active API key. The audit row is retained, not deleted.",
+      inputSchema: {
+        id: z.string().uuid().describe("Key id to revoke"),
+        owner: z.string().min(1).max(128).describe("Owner the key belongs to"),
+      },
+    },
+    instrument("revoke_api_key", async ({ id, owner }) => {
+      const revoked = await revokeApiKey(id, owner);
+      if (!revoked) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "No such active API key for that owner." }],
+        } satisfies CallToolResult;
+      }
+      return text(JSON.stringify(revoked, null, 2));
     }),
   );
 

@@ -126,18 +126,31 @@ jobs:
           print(f"PASS: NodePool memory floor = {floor}MiB (>= 4095)")
           PY
 
-      # Multi-env kustomize overlays: dev/stage/prod are three NAMESPACES on the one
-      # cluster, all rendered from a single shared base. Two mistakes are silent there
-      # because both produce a VALID render that Argo CD reports as Synced:
-      #   - two overlays naming the same namespace (one env overwrites the other in place)
-      #   - a committed placeholder image, which is exactly how REPLACE_WITH_GIT_SHA
-      #     reached the cluster and pinned the Deployment in InvalidImageName
-      # Gate asserts namespace uniqueness and that no base sentinel survives rendering.
-      # Verified to fail on all three injected defects, not just to pass when clean.
-      - name: mcp-backend — per-env kustomize overlays are unique and placeholder-free
+      # Multi-env Helm values: dev/stage/prod are three NAMESPACES on the one
+      # cluster, all rendered from a single shared chart. Several mistakes are silent
+      # there because each produces a VALID render that Argo CD reports as Synced:
+      #   - a committed placeholder tag, which is exactly how prod-bootstrap reached
+      #     prod's manifest and left the Deployment unable to pull anything
+      #   - a missing digest, which breaks the "prod runs the bytes stage validated"
+      #     guarantee the promotion pipeline exists to provide
+      #   - two envs declaring the same `environment` tag, which merges their telemetry
+      #   - a PDB with minAvailable >= replicaCount, which deadlocks node drains
+      # Gate asserts all four, per app, and that no chart sentinel survives rendering.
+      - name: Per-env Helm values are pinned, unique and placeholder-free
         run: |
           set -euo pipefail
-          python3 scripts/kustomize_overlay_gate.py gitops/apps/mcp-backend
+          python3 scripts/helm_values_gate.py charts/mcp-backend  gitops/apps/mcp-backend
+          python3 scripts/helm_values_gate.py charts/mcp-frontend gitops/apps/mcp-frontend
+
+      # `helm lint` on top of the values gate: the gate proves the environment files are
+      # sane, lint proves the CHART is well-formed independently of them.
+      - name: helm lint the application charts
+        run: |
+          set -euo pipefail
+          for chart in charts/*/; do
+            helm lint "$chart" --values "$chart/values.yaml" --quiet \
+              || { echo "::error::helm lint failed for $chart"; exit 1; }
+          done
 
       # The NodePool allows arch In [amd64, arm64] for cheaper Graviton capacity and the
       # Deployment sets no nodeSelector, so a pod can land on either. An amd64-only image
