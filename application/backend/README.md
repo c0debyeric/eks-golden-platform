@@ -159,10 +159,10 @@ It is **keyless** — the same OIDC model as the Terraform workflow:
   match (`scripts/build_arch_gate.py`).
 - Prints the exact image reference + digest to the run summary.
 
-Pin that **digest** in the `images:` block of the overlay you are promoting into
-(`gitops/apps/mcp-backend/overlays/<env>/kustomization.yaml`); ArgoCD then rolls it out. Prefer
-pure IaC? Move the ECR repo into `terraform/bootstrap` (a peer of the state bucket) so it is
-Terraform-managed and persists across `make down`/`up`.
+The workflow writes the resulting tag and digest straight into
+`gitops/apps/mcp-backend/values-dev.yaml`; ArgoCD then rolls it out. Promotion to stage and prod
+goes through `.github/workflows/promote.yml`, which copies an already-built digest forward and
+opens a PR. The ECR repository itself is Terraform-managed (`terraform/ecr.tf`).
 
 ## Kubernetes (GitOps) deployment
 
@@ -171,16 +171,15 @@ ArgoCD-managed manifests are committed to the repo and reconciled automatically:
 
 ```
 gitops/bootstrap/mcp-backend.yaml     ApplicationSet -> one Application per environment
+charts/mcp-backend/                   the Helm chart (templates + safe defaults)
+├── templates/deployment.yaml         non-root, probes, OTLP + DB env, zone spread
+├── templates/service.yaml            ClusterIP :80 -> :8080 (internal only)
+├── templates/pdb.yaml                PodDisruptionBudget
+└── templates/externalsecret.yaml     RDS credentials via External Secrets Operator
 gitops/apps/mcp-backend/
-├── base/
-│   ├── deployment.yaml               non-root, probes, OTLP env, zone spread
-│   ├── service.yaml                  ClusterIP :80 -> :8080 (internal only)
-│   ├── pdb.yaml                      PodDisruptionBudget (minAvailable: 1)
-│   └── kustomization.yaml
-└── overlays/
-    ├── dev/                          mcp-dev,   1 replica,  PDB removed, auto-sync
-    ├── stage/                        mcp-stage, 2 replicas, PDB kept,    auto-sync
-    └── prod/                         mcp-prod,  3 replicas, PDB minAvailable 2, MANUAL sync
+├── values-dev.yaml                   mcp-dev,   1 replica,  PDB off,           auto-sync
+├── values-stage.yaml                 mcp-stage, 2 replicas, minAvailable 1,    auto-sync
+└── values-prod.yaml                  mcp-prod,  3 replicas, minAvailable 2,    MANUAL sync
 ```
 
 The root app-of-apps discovers `gitops/bootstrap/mcp-backend.yaml`, whose ApplicationSet creates
@@ -189,12 +188,16 @@ after the observability stack (OTel operator wave 2, gateway collector wave 4), 
 endpoint exists before any pod starts. Each environment lands in its own namespace; there is no
 shared `application` namespace.
 
-The base `image:` is the sentinel `PLACEHOLDER_IMAGE`, which is **not** meant to be edited. Each
-overlay rewrites it through a kustomize `images:` block that pins the ECR repo plus the exact
-**digest** being promoted, so an environment can only ever run an image someone explicitly moved
-into it. A sentinel is used rather than a plausible default because a real-looking tag in the base
-would be silently inherited by any overlay whose patch is wrong — promotion is a digest change in
-the overlay, reviewed as a pull request.
+The Application uses **two sources**: the chart directory, plus the same repo again with
+`ref: values` so the per-environment values file can be referenced as
+`$values/gitops/apps/mcp-backend/values-<env>.yaml`. This keeps environment configuration out of
+the chart while still versioning both together.
+
+The chart deliberately ships **no default `image.tag`** — the template calls Helm's `required`, so
+rendering without a per-environment pin fails loudly instead of silently inheriting a plausible
+default. Each values file pins the ECR repo, the tag, **and** the digest, so an environment can
+only run an image someone explicitly moved into it. `scripts/helm_values_gate.py` enforces this in
+CI: it rejects empty, placeholder, or duplicated pins and re-renders every environment.
 
 Notes:
 - Uses the **explicit OTel SDK** (in `telemetry.ts`) rather than the operator's zero-code

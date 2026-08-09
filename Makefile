@@ -98,3 +98,34 @@ db-password: ## Print the RDS master password from Secrets Manager
 		--secret-id eks-golden/rds-master \
 		--query SecretString --output text | \
 		python3 -c "import sys,json; print(json.load(sys.stdin)['password'])"
+
+.PHONY: app-url
+app-url: ## Print the public URL of the dev frontend (ALB Ingress)
+	@host=$$(kubectl get ingress mcp-frontend -n mcp-dev \
+		-o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null); \
+	if [ -n "$$host" ]; then echo "http://$$host"; else \
+		echo "No ALB yet — the ingress is dev-only and takes ~2 min to provision."; fi
+
+.PHONY: app-status
+app-status: ## Show the app workloads across all three environments
+	@for ns in mcp-dev mcp-stage mcp-prod; do \
+		echo ">> $$ns"; \
+		kubectl get deploy,pods -n $$ns --no-headers 2>/dev/null || echo "   (namespace absent)"; \
+	done
+	@echo "\n>> Image actually running per environment"
+	@kubectl get pods -A -l app.kubernetes.io/part-of=eks-golden-platform \
+		-o custom-columns='NS:.metadata.namespace,POD:.metadata.name,IMAGE:.spec.containers[0].image' \
+		--no-headers 2>/dev/null || true
+
+.PHONY: app-render
+app-render: ## Render both charts for every environment exactly as ArgoCD will (offline)
+	@for app in mcp-backend mcp-frontend; do \
+		for env in dev stage prod; do \
+			echo ">> $$app/$$env"; \
+			helm template $$app charts/$$app \
+				-f gitops/apps/$$app/values-$$env.yaml >/dev/null || exit 1; \
+		done; \
+	done
+	@echo "All 6 renders OK"
+	@python3 scripts/helm_values_gate.py charts/mcp-backend gitops/apps/mcp-backend
+	@python3 scripts/helm_values_gate.py charts/mcp-frontend gitops/apps/mcp-frontend

@@ -63,16 +63,23 @@ eks-golden-platform/
 │   ├── iam.tf               # Pod Identity roles
 │   ├── storage.tf           # Loki + Tempo S3 buckets (+ lifecycle backstops)
 │   ├── rds.tf               # optional PostgreSQL (Multi-AZ + read replicas)
+│   ├── ecr.tf               # container registries for the two app images
 │   ├── argocd.tf            # ArgoCD bootstrap + root app-of-apps (the handoff)
 │   └── bootstrap/           # ONE-TIME: S3 state bucket + GitHub OIDC CI role
 ├── gitops/                  # APPLICATION layer (GitOps, ArgoCD-managed)
 │   ├── bootstrap/           # one child Application per component (+ sync waves)
 │   └── apps/                # Helm values + plain manifests per component
+│       ├── mcp-backend/     # per-env values for the backend chart (dev/stage/prod)
+│       ├── mcp-frontend/    # per-env values for the frontend chart (dev/stage/prod)
 │       ├── otel-collector/  # OTLP gateway (Deployment) + log collector (DaemonSet) + RBAC
 │       └── grafana-dashboards/  # dashboards as code (ConfigMaps for the Grafana sidecar)
+├── charts/                  # first-party Helm charts
+│   ├── mcp-backend/         # API + MCP server, RDS-backed
+│   └── mcp-frontend/        # Next.js UI + ALB Ingress
 ├── application/
-│   └── backend/             # OpenTelemetry-instrumented MCP server (TypeScript)
-├── scripts/                 # CI gates (CRD apiVersion + schema, kustomize overlays,
+│   ├── backend/             # OpenTelemetry-instrumented MCP + REST server (TypeScript)
+│   └── frontend/            # Next.js API-key management UI (TypeScript)
+├── scripts/                 # CI gates (CRD apiVersion + schema, Helm values pins,
 │                            #           build arch, OTel collector pipeline configs)
 └── docs/                    # architecture diagram + research/reference
 ```

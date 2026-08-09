@@ -1,5 +1,18 @@
 # 04 — Multi-Environment Promotion (dev → stage → prod on ONE cluster)
 
+> **PARTIALLY SUPERSEDED (2026-08-09) — read this as a decision record, not as current layout.**
+> The namespace-per-environment decision, the sync-wave ordering and the promotion model below
+> all still hold and are still what the repo does. The **rendering mechanism does not**: the
+> `base/` + `overlays/{dev,stage,prod}` kustomize layout described here was replaced by Helm
+> charts in `charts/mcp-backend` and `charts/mcp-frontend`, with per-environment values files in
+> `gitops/apps/<app>/values-<env>.yaml` supplied via ArgoCD's multi-source `$values` reference.
+> `scripts/kustomize_overlay_gate.py` became `scripts/helm_values_gate.py`, which enforces the
+> same invariants (pinned digest, no placeholders, unique environment, PDB sanity) plus a render
+> check. Reason for the change: a second workload (`mcp-frontend`) arrived, and duplicating an
+> eleven-file overlay tree per app is exactly the copy-paste that a chart's values files exist to
+> avoid. Everything below is preserved as written for the reasoning, including §6's field-name
+> trap, which is why the values files still pin tag *and* digest.
+
 > Golden-standard research + design for turning this single-environment platform into a THREE
 > ENVIRONMENT platform without buying a second or third cluster, and for automating the
 > `dev → stage → prod` promotion that today does not exist at all. Platform (EKS) is doc 01,
