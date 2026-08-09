@@ -32,5 +32,5 @@ backend:
 
 # Rewritten by the promote workflow on a stage -> prod promotion.
 image:
-  tag: ab4497dbfc35
-  digest: sha256:1a8729555b2b3fccdc4dfb665d81291e01ec1eac65ff5db909c255fc2668edf5
+  tag: f952f79c3819
+  digest: sha256:a43a7b3fac7c836ea7d79e2b7171601dd162d9ac97246585b6be3e8a26932553
