@@ -24,5 +24,5 @@ backend:
 
 # Rewritten by the build-image workflow. Pinned by digest as well as tag.
 image:
-  tag: bootstrap
-  digest: ""
+  tag: ab4497dbfc35
+  digest: sha256:1a8729555b2b3fccdc4dfb665d81291e01ec1eac65ff5db909c255fc2668edf5

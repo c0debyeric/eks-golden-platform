@@ -22,5 +22,5 @@ backend:
 
 # Rewritten by the promote workflow on a dev -> stage promotion.
 image:
-  tag: bootstrap
-  digest: ""
+  tag: ab4497dbfc35
+  digest: sha256:1a8729555b2b3fccdc4dfb665d81291e01ec1eac65ff5db909c255fc2668edf5

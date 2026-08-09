@@ -10,7 +10,7 @@
  * the ClusterIP Service), so this API is never exposed to the browser directly
  * and stays internal to the cluster.
  */
-import { Router, type Request, type Response } from "express";
+import { Router, type Request, type RequestHandler, type Response } from "express";
 import { z } from "zod";
 
 import { createApiKey, listApiKeys, revokeApiKey, verifyApiKey } from "./apiKeys.js";
@@ -57,8 +57,15 @@ const fail = (res: Response, status: number, message: string): void => {
 
 export const apiRouter = Router();
 
-/** Every route under /api requires a resolvable owner. */
-apiRouter.use((req, res, next) => {
+/**
+ * Gate the owner-scoped routes.
+ *
+ * Applied per-route rather than via `apiRouter.use`, because /keys/verify
+ * authenticates with the key itself and must NOT require an owner header —
+ * the caller presenting a key generally does not know whose it is, and
+ * trusting a header there would be meaningless anyway.
+ */
+const requireOwner: RequestHandler = (req, res, next) => {
   const owner = resolveOwner(req);
   if (!owner) {
     fail(res, 400, `Missing or invalid ${OWNER_HEADER} header.`);
@@ -66,9 +73,9 @@ apiRouter.use((req, res, next) => {
   }
   res.locals.owner = owner;
   next();
-});
+};
 
-apiRouter.get("/keys", async (_req: Request, res: Response) => {
+apiRouter.get("/keys", requireOwner, async (_req: Request, res: Response) => {
   const owner = res.locals.owner as string;
   try {
     res.json({ keys: await listApiKeys(owner) });
@@ -78,7 +85,7 @@ apiRouter.get("/keys", async (_req: Request, res: Response) => {
   }
 });
 
-apiRouter.post("/keys", async (req: Request, res: Response) => {
+apiRouter.post("/keys", requireOwner, async (req: Request, res: Response) => {
   const owner = res.locals.owner as string;
   const parsed = createSchema.safeParse(req.body ?? {});
   if (!parsed.success) {
@@ -98,7 +105,7 @@ apiRouter.post("/keys", async (req: Request, res: Response) => {
   }
 });
 
-apiRouter.delete("/keys/:id", async (req: Request, res: Response) => {
+apiRouter.delete("/keys/:id", requireOwner, async (req: Request, res: Response) => {
   const owner = res.locals.owner as string;
   const parsed = idSchema.safeParse(req.params.id);
   if (!parsed.success) {

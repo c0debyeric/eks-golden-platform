@@ -17,5 +17,5 @@ podDisruptionBudget:
 
 # Rewritten by the promote workflow on a dev -> stage promotion.
 image:
-  tag: a7b96ed603df
-  digest: sha256:feeeae5e3c0764a2d79f34bbac1150c568a0f0e93c102f01d341b2631bd75761
+  tag: ab4497dbfc35
+  digest: sha256:05e83b6318d62685b3c4eade8ee805cb692a86b63c8bd1480943e80a5c423990
