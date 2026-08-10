@@ -15,5 +15,5 @@ podDisruptionBudget:
 # Pinned by DIGEST as well as tag: a digest is immutable by construction, so the
 # artifact promoted onward is provably the identical bytes dev validated.
 image:
-  tag: 7bc62a2560e1
-  digest: sha256:8024b18af987fa633e48fcc67f857fb2425cec3821f097ce0da361ef7afccd27
+  tag: 314fea4c9976
+  digest: sha256:69fc984ce1875bf53bc25520472c7caa845dc78d7c61dd577cf206134e1a8275
