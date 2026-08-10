@@ -16,11 +16,15 @@ name: build-image
 on:
   push:
     branches: [main]
+    # NOTE: `paths` and `paths-ignore` are mutually exclusive for a single event
+    # — defining both makes GitHub reject the workflow outright (the run shows
+    # up with zero jobs and the workflow file path as its name, which does not
+    # look like a syntax error at first glance). Exclusions therefore go inline
+    # as negated patterns; order matters, the last match wins.
     paths:
       - "application/**"
+      - "!application/**/*.md"
       - ".github/workflows/build-image.yml"
-    paths-ignore:
-      - "application/**/*.md"
   workflow_dispatch: {}
 
 # Serialise runs per commit. WHY: the tag is the 12-char git SHA and ECR tags are
