@@ -6,17 +6,14 @@
 # that never exists. Dev is also the environment we most want Karpenter free to
 # bin-pack aggressively, so the PDB is disabled rather than tuned.
 environment: dev
-
 replicaCount: 1
-
 podDisruptionBudget:
   enabled: false
-
 # Promotion target. The build-image workflow rewrites tag+digest HERE ONLY —
 # never in the chart's own values.yaml, and never in stage/prod.
 #
 # Pinned by DIGEST as well as tag: a digest is immutable by construction, so the
 # artifact promoted onward is provably the identical bytes dev validated.
 image:
-  tag: f952f79c3819
-  digest: sha256:d26a674f76003048012a801a1d1414c5e964b8854aec814fd0ca673c245ff5e6
+  tag: 7bc62a2560e1
+  digest: sha256:8024b18af987fa633e48fcc67f857fb2425cec3821f097ce0da361ef7afccd27
