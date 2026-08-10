@@ -8,21 +8,16 @@
 # and the group's rule ordering — not intent — would decide which environment a
 # visitor reaches. Enable stage/prod here only once each has a real hostname.
 environment: dev
-
 replicaCount: 1
-
 podDisruptionBudget:
   enabled: false
-
 ingress:
   enabled: true
-
 # In-cluster DNS of this environment's backend. Namespace-qualified so it cannot
 # accidentally resolve to another environment's backend.
 backend:
   url: http://mcp-backend.mcp-dev.svc.cluster.local
-
 # Rewritten by the build-image workflow. Pinned by digest as well as tag.
 image:
-  tag: f952f79c3819
-  digest: sha256:a43a7b3fac7c836ea7d79e2b7171601dd162d9ac97246585b6be3e8a26932553
+  tag: 7bc62a2560e1
+  digest: sha256:d9ac64f0a0bde3ff7f63b765246dea489b9a68d98d885848ae3d6dcbe94c1c2b
