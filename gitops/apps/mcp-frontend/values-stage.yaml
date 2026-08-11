@@ -3,9 +3,9 @@
 # Production rehearsal: 2 replicas and the PDB retained, so rolling-update
 # readiness gaps and drain deadlocks surface here rather than in prod.
 #
-# Ingress stays DISABLED until stage has its own hostname — see the note in
-# values-dev.yaml about ALB group rule collisions. Reach it with
-# `kubectl port-forward -n mcp-stage svc/mcp-frontend 3000:80` meanwhile.
+# Stage has its OWN ALB group, so exposing it cannot collide with dev or prod on
+# a shared listener. Still plain HTTP with no host rule — fine for a rehearsal
+# environment holding no real data.
 environment: stage
 
 replicaCount: 2
@@ -15,7 +15,8 @@ podDisruptionBudget:
   minAvailable: 1
 
 ingress:
-  enabled: false
+  enabled: true
+  groupName: eks-golden-stage
 
 backend:
   url: http://mcp-backend.mcp-stage.svc.cluster.local

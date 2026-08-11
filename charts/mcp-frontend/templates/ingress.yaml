@@ -1,14 +1,21 @@
 {{- /*
 Public entrypoint, provisioned by the AWS Load Balancer Controller.
 
-Ingresses sharing `group.name` are merged into ONE ALB. That is a cost decision
-(an ALB per Ingress is ~$16/mo each) but it has a correctness consequence worth
-stating: rules from every member Ingress land on the same listener, so two
-environments both matching path `/` with no host rule would collide and the
-group's rule ordering would decide the winner non-obviously. Only ONE environment
-should enable this Ingress until real hostnames exist.
+Ingresses sharing `group.name` are merged into ONE ALB. Sharing is the cheap
+option (a dedicated ALB is ~$16-18/mo each), but it has a correctness
+consequence: rules from every member Ingress land on the same listener, so two
+environments both matching path `/` with no host rule collide, and the group's
+rule ordering — not intent — decides which environment a visitor reaches.
+
+So `groupName` is required per environment and each environment uses its own,
+giving each its own ALB and its own DNS name. Once real hostnames exist, move
+every environment back onto one shared group and disambiguate with `host`
+instead: that is both cheaper and stricter.
 */ -}}
 {{- if .Values.ingress.enabled }}
+{{- if and (empty .Values.ingress.groupName) (empty .Values.ingress.host) }}
+{{- fail "ingress.groupName must be set when ingress is enabled and no host rule is configured, otherwise environments can collide on a shared ALB listener" }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -17,6 +24,9 @@ metadata:
     {{- include "mcp-frontend.labels" . | nindent 4 }}
   annotations:
     {{- toYaml .Values.ingress.annotations | nindent 4 }}
+    {{- with .Values.ingress.groupName }}
+    alb.ingress.kubernetes.io/group.name: {{ . | quote }}
+    {{- end }}
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   rules:

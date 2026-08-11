@@ -3,16 +3,18 @@
 # Cheapest environment: 1 replica, no PDB (minAvailable:1 on a single replica
 # blocks eviction outright and deadlocks Karpenter consolidation).
 #
-# Dev is the ONLY environment with the Ingress enabled. All three environments
-# would otherwise join the same ALB group with a path-`/` rule and no host rule,
-# and the group's rule ordering — not intent — would decide which environment a
-# visitor reaches. Enable stage/prod here only once each has a real hostname.
+# Every environment has its OWN ALB group, so each can be exposed without the
+# three colliding on one listener's path-`/` rule. The cost is a load balancer
+# per environment (~$16-18/mo). Once real hostnames exist, collapse these back
+# onto one shared group and disambiguate with `host` instead — cheaper, and
+# stricter than relying on rule ordering.
 environment: dev
 replicaCount: 1
 podDisruptionBudget:
   enabled: false
 ingress:
   enabled: true
+  groupName: eks-golden-dev
 # In-cluster DNS of this environment's backend. Namespace-qualified so it cannot
 # accidentally resolve to another environment's backend.
 backend:

@@ -4,11 +4,16 @@
 # consolidation cannot drain down to a single pod. Higher memory ceiling than the
 # chart default, which is sized for an idle dev pod.
 #
-# Ingress disabled until prod has a real hostname AND TLS. Serving API keys over
-# the plain-HTTP demo listener is acceptable for dev; it is not for prod.
+# Prod has its OWN ALB group, so exposing it cannot collide with dev or stage.
 #
-# Prod's Argo CD Application has no `automated` syncPolicy: merging a promotion
-# PR changes desired state, and a human then triggers the sync.
+# RESIDUAL RISK, stated plainly: this listener is internet-facing, plain HTTP,
+# and the API behind it has no user authentication — every visitor acts as the
+# single hardcoded owner `demo`. That is acceptable ONLY because this is a
+# demonstration platform holding no real data. Before this carries anything
+# real: terminate TLS with an ACM cert, put `alb.ingress.kubernetes.io/
+# auth-type: oidc` on the listener, and replace APP_OWNER with the verified
+# identity the ALB injects. All three need a domain, which is the actual
+# blocker — not effort.
 environment: prod
 
 replicaCount: 3
@@ -18,7 +23,8 @@ podDisruptionBudget:
   minAvailable: 2
 
 ingress:
-  enabled: false
+  enabled: true
+  groupName: eks-golden-prod
 
 resources:
   requests:

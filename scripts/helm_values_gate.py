@@ -27,6 +27,13 @@ none of which ``helm template`` exits non-zero for:
    hang forever. The chart itself fails on this, but checking here reports all
    environments at once instead of stopping at the first.
 
+5. **Two environments claiming the same public route.** Ingresses sharing an ALB
+   ``group.name`` are merged onto one listener. If two of them also share a host
+   (or have no host at all) and a path, the group's rule ordering decides which
+   environment a visitor reaches. Nothing errors: both Ingresses report Healthy
+   and one silently shadows the other. Only comparing the environments catches
+   it.
+
 Usage:
     python3 scripts/helm_values_gate.py charts/mcp-backend gitops/apps/mcp-backend
 """
@@ -70,6 +77,8 @@ def main() -> int:
 
     errors: list[str] = []
     seen_environment_tags: dict[str, str] = {}
+    # (alb group, host, path) -> the environment file that already claimed it.
+    seen_routes: dict[tuple[str, str, str], str] = {}
 
     for env in ENVIRONMENTS:
         values_file = values_dir / f"values-{env}.yaml"
@@ -127,7 +136,30 @@ def main() -> int:
                     f"deadlocks node drains and Karpenter consolidation."
                 )
 
-        # 5. The render itself must succeed. This is the check that catches a
+        # 5. Public routing must be unambiguous across environments.
+        ingress = values.get("ingress") or {}
+        if ingress.get("enabled"):
+            group = str(ingress.get("groupName") or "")
+            host = str(ingress.get("host") or "")
+            path = str(ingress.get("path") or "/")
+            if not group and not host:
+                errors.append(
+                    f"{values_file}: ingress is enabled with neither 'groupName' nor "
+                    f"'host'. It would join the default ALB group and compete on path "
+                    f"{path!r} with every other environment."
+                )
+            route = (group, host, path)
+            if route in seen_routes:
+                errors.append(
+                    f"{values_file}: ingress route {route} is already claimed by "
+                    f"{seen_routes[route]}. Two environments merged onto one ALB "
+                    f"listener with the same host and path resolve by rule ordering, "
+                    f"so a visitor silently reaches whichever sorted first."
+                )
+            else:
+                seen_routes[route] = str(values_file)
+
+        # 6. The render itself must succeed. This is the check that catches a
         #    values key the chart's `required` guards reject.
         result = subprocess.run(
             [
@@ -148,7 +180,7 @@ def main() -> int:
             errors.append(f"{values_file}: helm template failed:\n{result.stderr.strip()}")
             continue
 
-        # 6. And no sentinel may survive into the RENDERED output either —
+        # 7. And no sentinel may survive into the RENDERED output either —
         #    a placeholder could arrive via the chart's own defaults, not just
         #    the environment file.
         rendered = result.stdout
