@@ -21,5 +21,5 @@ database:
 
 # Rewritten by the promote workflow on a dev -> stage promotion.
 image:
-  tag: f952f79c3819
-  digest: sha256:d26a674f76003048012a801a1d1414c5e964b8854aec814fd0ca673c245ff5e6
+  tag: 8405d2281027
+  digest: sha256:28e54473384b015082369a5face9197a35a5c8744169e435596523ce3ebd6d44
