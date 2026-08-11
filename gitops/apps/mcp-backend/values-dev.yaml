@@ -18,5 +18,5 @@ database:
 # Pinned by DIGEST as well as tag: a digest is immutable by construction, so the
 # artifact promoted onward is provably the identical bytes dev validated.
 image:
-  tag: 8405d2281027
-  digest: sha256:28e54473384b015082369a5face9197a35a5c8744169e435596523ce3ebd6d44
+  tag: 7f729b934883
+  digest: sha256:16d350b4bf52bbb611be468459ed4e664366b28738121084eb27c6bb3a371b9f
