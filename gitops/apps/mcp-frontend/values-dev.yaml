@@ -21,5 +21,5 @@ backend:
   url: http://mcp-backend.mcp-dev.svc.cluster.local
 # Rewritten by the build-image workflow. Pinned by digest as well as tag.
 image:
-  tag: 7bc62a2560e1
-  digest: sha256:d9ac64f0a0bde3ff7f63b765246dea489b9a68d98d885848ae3d6dcbe94c1c2b
+  tag: c7409b6d1916
+  digest: sha256:c1a365ce1bd7fe71365150733b371f158bf08ea29bd6543a7f1ec32e3c38e27d
