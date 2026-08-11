@@ -32,6 +32,22 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: kube-system
+  # cert-manager's ca-injector writes the webhook caBundle at runtime, and with
+  # enableCertManager the chart renders those fields EMPTY on purpose. Without
+  # this, selfHeal sees the populated live value as drift and strips the CA back
+  # out on the next sync — which breaks admission for every Service and Ingress
+  # in the cluster. Ignore the field that another controller legitimately owns.
+  ignoreDifferences:
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+      name: aws-load-balancer-webhook
+      jqPathExpressions:
+        - '.webhooks[]?.clientConfig.caBundle'
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      name: aws-load-balancer-webhook
+      jqPathExpressions:
+        - '.webhooks[]?.clientConfig.caBundle'
   syncPolicy:
     automated: { prune: true, selfHeal: true }
     syncOptions: [CreateNamespace=true, ServerSideApply=true]

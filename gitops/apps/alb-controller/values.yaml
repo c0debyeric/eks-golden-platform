@@ -17,6 +17,27 @@ region: us-east-1
 #   aws eks describe-cluster --name eks-golden --query cluster.resourcesVpcConfig.vpcId
 # and update this field (or template it via an ApplicationSet parameter). See docs/GITOPS.md.
 vpcId: vpc-0c53049f6bb190614
+
+# Let cert-manager issue the admission webhook's serving certificate.
+#
+# WHY (found 2026-08-11, when a new Service in mcp-prod was rejected with
+# "x509: certificate signed by unknown authority"): by default this chart mints
+# the webhook CA with Helm's genCA at TEMPLATE time. Argo CD re-renders the
+# chart on every sync and every hard refresh, so each render produces a BRAND
+# NEW CA and serving cert. The rendered Secret and the rendered caBundle agree
+# with each other, but the controller pods are still serving the certificate
+# they started with — so the API server, now trusting the freshly rendered CA,
+# cannot verify the pod's older cert and every Service/Ingress admission fails
+# cluster-wide until the pods happen to restart.
+#
+# The failure is intermittent and blames the wrong component: it looks like a
+# broken Service, not a controller whose certificate silently rotated. With
+# cert-manager the keypair lives in a Secret owned by a Certificate, is stable
+# across renders, and ca-injector keeps the webhook caBundle matched to it.
+#
+# Ordering is already satisfied: cert-manager is sync-wave -1, this app is 0.
+enableCertManager: true
+
 resources:
   requests:
     cpu: 50m
