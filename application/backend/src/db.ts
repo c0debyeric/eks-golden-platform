@@ -55,6 +55,22 @@ function buildTlsConfig(): pg.ConnectionConfig["ssl"] {
  * environment across three environments sharing one instance. 5 * 9 = 45 leaves
  * headroom for migrations, psql sessions and the replicas' own overhead.
  */
+/**
+ * Postgres identifiers are case-folded unless quoted, and a schema name reaches
+ * us from the environment. Validate against a conservative charset and then
+ * double-quote at every use site: `search_path` and `CREATE SCHEMA` cannot take
+ * a bind parameter, so this is the only thing standing between a malformed
+ * value and injected DDL.
+ */
+function assertSafeIdentifier(value: string, what: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(value)) {
+    throw new Error(`${what} must match /^[A-Za-z_][A-Za-z0-9_]{0,62}$/, got: ${value}`);
+  }
+  return value;
+}
+
+const SCHEMA_NAME = assertSafeIdentifier(config.database.schema, "database.schema");
+
 export const pool = new pg.Pool({
   host: config.database.host,
   port: config.database.port,
@@ -68,6 +84,12 @@ export const pool = new pg.Pool({
   // the database is unreachable — the readiness probe then sheds the pod.
   connectionTimeoutMillis: 5_000,
   application_name: `${config.serviceName}-${config.environment}`,
+  // Pin every session in this pool to this environment's schema. Set on the
+  // CONNECTION rather than per query so no query can accidentally omit it, and
+  // so unqualified DDL in migrate() lands in the right place. `public` is
+  // deliberately excluded from the path: falling back to it is exactly the
+  // cross-environment leak this prevents.
+  options: `-c search_path="${SCHEMA_NAME}"`,
 });
 
 // An idle client erroring (e.g. RDS failover severing the connection) emits on
@@ -118,9 +140,18 @@ export async function migrate(): Promise<void> {
     try {
       // pgcrypto supplies gen_random_uuid() on PostgreSQL < 13; on 13+ it is
       // built in, but the extension is harmless and keeps the DDL portable.
-      await client.query("CREATE EXTENSION IF NOT EXISTS pgcrypto");
+      // Created explicitly in `public` because the connection's search_path no
+      // longer includes it, and an extension belongs in one shared place rather
+      // than once per environment schema.
+      await client.query("CREATE EXTENSION IF NOT EXISTS pgcrypto SCHEMA public");
+      // The schema must exist before search_path can resolve to it. Identifier
+      // is validated at module load, then quoted.
+      await client.query(`CREATE SCHEMA IF NOT EXISTS "${SCHEMA_NAME}"`);
+      // gen_random_uuid() below resolves via pg_catalog, which is implicitly on
+      // the search path regardless of the `options` override, so the DDL does
+      // not need qualifying.
       await client.query(SCHEMA);
-      logger.info("database schema is up to date");
+      logger.info("database schema is up to date", { schema: SCHEMA_NAME });
     } finally {
       await client.query("SELECT pg_advisory_unlock($1)", [0x6d63_7062]);
     }

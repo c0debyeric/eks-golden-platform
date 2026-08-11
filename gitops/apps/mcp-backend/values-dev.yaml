@@ -9,6 +9,9 @@ environment: dev
 replicaCount: 1
 podDisruptionBudget:
   enabled: false
+# All three environments share one RDS database, so each owns a schema.
+database:
+  schema: mcp_dev
 # Promotion target. The build-image workflow rewrites tag+digest HERE ONLY —
 # never in the chart's own values.yaml, and never in stage/prod.
 #

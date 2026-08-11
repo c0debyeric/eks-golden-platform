@@ -34,6 +34,11 @@ none of which ``helm template`` exits non-zero for:
    and one silently shadows the other. Only comparing the environments catches
    it.
 
+6. **Two environments sharing a database schema.** dev/stage/prod are namespaces
+   against ONE RDS database. Sharing a schema means sharing the ``api_keys``
+   table, so a key created in dev is readable in prod — observed on 2026-08-11,
+   the moment prod was first deployed.
+
 Usage:
     python3 scripts/helm_values_gate.py charts/mcp-backend gitops/apps/mcp-backend
 """
@@ -79,6 +84,8 @@ def main() -> int:
     seen_environment_tags: dict[str, str] = {}
     # (alb group, host, path) -> the environment file that already claimed it.
     seen_routes: dict[tuple[str, str, str], str] = {}
+    # postgres schema -> the environment file that already claimed it.
+    seen_schemas: dict[str, str] = {}
 
     for env in ENVIRONMENTS:
         values_file = values_dir / f"values-{env}.yaml"
@@ -159,7 +166,28 @@ def main() -> int:
             else:
                 seen_routes[route] = str(values_file)
 
-        # 6. The render itself must succeed. This is the check that catches a
+        # 6. Database schema must be per-environment and unique. All three
+        #    environments point at ONE RDS database, so a shared schema means a
+        #    shared api_keys table: a key created in dev is then readable in
+        #    prod. Only comparing environments catches it; each file is
+        #    individually valid.
+        schema = (values.get("database") or {}).get("schema")
+        if schema is not None or "database" in values:
+            if not schema:
+                errors.append(
+                    f"{values_file}: database.schema is unset. Environments share one "
+                    f"RDS database, so an unset schema merges their data."
+                )
+            elif schema in seen_schemas:
+                errors.append(
+                    f"{values_file}: database.schema {schema!r} is also used by "
+                    f"{seen_schemas[schema]}. Two environments sharing a schema share "
+                    f"the api_keys table."
+                )
+            else:
+                seen_schemas[str(schema)] = str(values_file)
+
+        # 7. The render itself must succeed. This is the check that catches a
         #    values key the chart's `required` guards reject.
         result = subprocess.run(
             [
@@ -180,7 +208,7 @@ def main() -> int:
             errors.append(f"{values_file}: helm template failed:\n{result.stderr.strip()}")
             continue
 
-        # 7. And no sentinel may survive into the RENDERED output either —
+        # 8. And no sentinel may survive into the RENDERED output either —
         #    a placeholder could arrive via the chart's own defaults, not just
         #    the environment file.
         rendered = result.stdout

@@ -60,6 +60,15 @@ export const config = {
     ssl: bool(process.env.PGSSL, true),
     /** Path to the Amazon RDS CA bundle mounted by the Helm chart. */
     caFile: process.env.PGSSLROOTCERT ?? "",
+    /**
+     * Postgres schema this environment owns.
+     *
+     * dev/stage/prod are three namespaces against ONE RDS instance and one
+     * database, so without this they share a single `api_keys` table and a key
+     * created in dev is readable in prod. A schema per environment restores
+     * isolation without paying for an instance per environment.
+     */
+    schema: process.env.PGSCHEMA ?? "public",
     poolMax: int(process.env.PG_POOL_MAX, 5),
   },
 } as const;

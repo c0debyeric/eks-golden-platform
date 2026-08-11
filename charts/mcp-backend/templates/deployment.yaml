@@ -96,6 +96,14 @@ spec:
                   key: password
             - name: PGSSL
               value: {{ .Values.database.sslMode | quote }}
+            {{- /*
+            Per-environment schema. `required` because dev/stage/prod share ONE
+            RDS database: if this silently defaulted to `public` the three
+            environments would share one api_keys table, and a key created in
+            dev would be readable in prod. Observed exactly that on 2026-08-11.
+            */}}
+            - name: PGSCHEMA
+              value: {{ required "database.schema must be set per environment values file (dev/stage/prod must NOT share one schema)" .Values.database.schema | quote }}
             - name: PG_POOL_MAX
               value: {{ .Values.database.poolMax | quote }}
           resources:

@@ -59,6 +59,10 @@ database:
   # Name of the Kubernetes Secret ESO writes and the Deployment consumes.
   secretName: mcp-backend-db
   sslMode: "true"
+  # Postgres schema this environment owns. Intentionally EMPTY here so the
+  # template's `required` fires: all three environments point at the same RDS
+  # database, so a shared default silently merges their data.
+  schema: ""
   poolMax: 5
 
 securityContext:

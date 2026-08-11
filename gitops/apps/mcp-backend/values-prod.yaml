@@ -19,6 +19,11 @@ podDisruptionBudget:
   enabled: true
   minAvailable: 2
 
+# All three environments share one RDS database, so each owns a schema. Without
+# this, dev traffic writes into the table prod reads.
+database:
+  schema: mcp_prod
+
 resources:
   requests:
     cpu: 100m

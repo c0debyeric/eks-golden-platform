@@ -15,6 +15,10 @@ podDisruptionBudget:
   enabled: true
   minAvailable: 1
 
+# All three environments share one RDS database, so each owns a schema.
+database:
+  schema: mcp_stage
+
 # Rewritten by the promote workflow on a dev -> stage promotion.
 image:
   tag: f952f79c3819
