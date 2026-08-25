@@ -153,13 +153,72 @@ const httpServer = app.listen(config.port, () => {
   });
 });
 
+/**
+ * How long to let in-flight requests finish before forcing sockets closed.
+ * Must stay comfortably below the pod's terminationGracePeriodSeconds (30s by
+ * default), or the kubelet SIGKILLs the process mid-cleanup and the bound
+ * becomes meaningless.
+ */
+const SHUTDOWN_GRACE_MS = 10_000;
+
+/**
+ * Stop accepting connections and drain in-flight requests, but never wait
+ * longer than `graceMs`.
+ *
+ * WHY this is not just `httpServer.close()`: close() fires its callback only
+ * once every ACTIVE socket has finished, and it will wait for that forever.
+ * Idle keep-alive sockets are not the problem — Node >= 19 closes those on
+ * close() by itself — but a socket with a request still in progress is. A
+ * client that stops mid-request (a dropped mobile connection, a stalled proxy,
+ * a slow-loris probe on a public ALB) leaves one, and then the whole shutdown
+ * blocks behind it.
+ *
+ * That is not a hypothetical ordering nit; it silently deletes the cleanup.
+ * Measured against this server with one unfinished request open: unbounded
+ * close() never returned, the kubelet SIGKILLed the pod, and neither of the two
+ * steps that follow — draining the Postgres pool, flushing the final telemetry
+ * batch — ran at all. Bounded, it exits at graceMs having run both.
+ *
+ * closeIdleConnections() is still called so the ordinary case settles at once
+ * rather than idling until the timer; the timer bounds the pathological one and
+ * then closes the remaining sockets by force.
+ */
+function closeHttpServer(graceMs: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+
+    const timer = setTimeout(() => {
+      logger.warn("in-flight requests did not finish in time; forcing sockets closed", {
+        graceMs,
+      });
+      httpServer.closeAllConnections();
+      settle();
+    }, graceMs);
+    // Do not let this timer keep the event loop alive on a clean, fast shutdown.
+    timer.unref();
+
+    httpServer.close(() => {
+      clearTimeout(timer);
+      settle();
+    });
+
+    // Release keep-alive sockets that are not currently serving a request.
+    httpServer.closeIdleConnections();
+  });
+}
+
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info("shutting down", { signal });
 
   // Stop accepting new connections, then drain the pool and flush telemetry.
-  await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+  await closeHttpServer(SHUTDOWN_GRACE_MS);
   await closePool().catch((err) =>
     logger.error("failed to close the database pool", { error: (err as Error).message }),
   );

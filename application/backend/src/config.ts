@@ -28,7 +28,13 @@ export const config = {
   serviceVersion: process.env.npm_package_version ?? "0.1.0",
   environment: process.env.OTEL_DEPLOYMENT_ENVIRONMENT ?? "dev",
 
-  port: Number.parseInt(process.env.PORT ?? "8080", 10),
+  // Via int(), not a bare parseInt: an empty or non-numeric PORT ("", "auto") makes
+  // parseInt return NaN, and app.listen(NaN) does NOT throw — it binds a random
+  // free port. The container then starts and logs "listening" while every probe
+  // against 8080 is refused, which reads as a crash rather than a bad env var.
+  // int() falls back to 8080 instead. Note this shares parseInt's prefix parsing,
+  // so a typo like "8O80" still yields 8 — same as every other numeric var here.
+  port: int(process.env.PORT, 8080),
   mcpPath: process.env.MCP_HTTP_PATH ?? "/mcp",
 
   /** Host header allow-list for DNS-rebinding protection; empty = disabled. */
