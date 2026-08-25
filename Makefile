@@ -8,6 +8,9 @@ TF        := terraform
 TF_DIR    := terraform
 REGION    ?= us-east-1
 CLUSTER   ?= eks-golden
+# Local port `otel-status` forwards the collector's self-metrics to. Overridable
+# because 8888 is a common local-dev collision.
+OTEL_PORT ?= 18888
 
 .DEFAULT_GOAL := help
 
@@ -79,11 +82,33 @@ grafana-password: ## Print the Grafana admin credentials (materialised by Extern
 otel-status: ## Is telemetry actually flowing? (collector pods + per-signal throughput)
 	@echo ">> Collectors"
 	@kubectl get pods -n observability -l app.kubernetes.io/managed-by=opentelemetry-operator 2>/dev/null || true
-	@echo "\n>> Accepted vs exported (non-zero on both sides means the pipeline is live)"
-	@kubectl exec -n observability deploy/gateway-collector -- \
-		wget -qO- http://localhost:8888/metrics 2>/dev/null | \
-		grep -E '^otelcol_(receiver_accepted|exporter_sent|exporter_send_failed)_(spans|metric_points|log_records)' || \
-		echo "Could not read collector telemetry — is the gateway running?"
+	@printf '\n>> Accepted vs exported per signal\n'
+	@printf '   both sides non-zero  = that signal is live\n'
+	@printf '   send_failed climbing = the BACKEND is down, not the collector\n\n'
+	@# PORT-FORWARD, NOT `kubectl exec`. This previously shelled into the collector and
+	@# ran `wget`, which cannot work: the collector image
+	@# (otel/opentelemetry-collector-contrib) is DISTROLESS -- no shell, no wget, no curl.
+	@# Every invocation therefore fell through to the "could not read" branch, so the one
+	@# target whose entire job is proving telemetry is flowing silently proved nothing.
+	@# The operator already exposes these metrics as a Service; forward that instead.
+	@set -e; \
+	kubectl port-forward -n observability svc/gateway-collector-monitoring \
+		$(OTEL_PORT):8888 >/dev/null 2>&1 & \
+	pf=$$!; \
+	trap 'kill $$pf 2>/dev/null || true' EXIT INT TERM; \
+	ready=""; \
+	for _ in $$(seq 1 20); do \
+		if curl -sf "http://127.0.0.1:$(OTEL_PORT)/metrics" >/dev/null 2>&1; then ready=1; break; fi; \
+		sleep 1; \
+	done; \
+	if [ -z "$$ready" ]; then \
+		echo "Could not reach the gateway collector's metrics endpoint."; \
+		echo "Check: kubectl get pods -n observability -l app.kubernetes.io/name=gateway-collector"; \
+		exit 1; \
+	fi; \
+	curl -s "http://127.0.0.1:$(OTEL_PORT)/metrics" | \
+		grep -E '^otelcol_(receiver_accepted|exporter_sent|exporter_send_failed)_(spans|metric_points|log_records)' | \
+		sort || echo "Collector is up but exported no per-signal counters yet."
 
 .PHONY: rds-info
 rds-info: ## Show RDS endpoints + master-secret ARN (only if create_rds=true)
@@ -112,7 +137,7 @@ app-status: ## Show the app workloads across all three environments
 		echo ">> $$ns"; \
 		kubectl get deploy,pods -n $$ns --no-headers 2>/dev/null || echo "   (namespace absent)"; \
 	done
-	@echo "\n>> Image actually running per environment"
+	@printf '\n>> Image actually running per environment\n'
 	@kubectl get pods -A -l app.kubernetes.io/part-of=eks-golden-platform \
 		-o custom-columns='NS:.metadata.namespace,POD:.metadata.name,IMAGE:.spec.containers[0].image' \
 		--no-headers 2>/dev/null || true
