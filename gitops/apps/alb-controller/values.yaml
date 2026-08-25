@@ -15,7 +15,7 @@ region: us-east-1
 # NOTE: vpcId is environment-specific — it changes on a fresh `terraform apply`. For a
 # reproducible bring-up, read the live value with:
 #   aws eks describe-cluster --name eks-golden --query cluster.resourcesVpcConfig.vpcId
-# and update this field (or template it via an ApplicationSet parameter). See docs/GITOPS.md.
+# and update this field (or template it via an ApplicationSet parameter). See docs/TEARDOWN-GOTCHAS.md.
 vpcId: vpc-0c53049f6bb190614
 
 # Let cert-manager issue the admission webhook's serving certificate.

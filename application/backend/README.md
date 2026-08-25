@@ -39,12 +39,20 @@ OpenTelemetry SDK · Docker (multi-stage, non-root) · Zod
 ## Tools exposed
 
 ```
-Tool              Input                         Returns
-----------------  ----------------------------  -----------------------------
-echo              { message: string }           the same text (connectivity check)
-add               { a: number, b: number }      a + b
-get_server_time   { timeZone?: string }         current time (ISO-8601, or in the zone)
+Tool              Input                                  Returns
+----------------  -------------------------------------  ---------------------------------------
+echo              { message: string }                    the same text (connectivity check)
+add               { a: number, b: number }               a + b
+get_server_time   { timeZone?: string }                  current time (ISO-8601, or in the zone)
+create_api_key    { name: string, owner: string }        the new key — PLAINTEXT, shown ONCE
+list_api_keys     { owner: string }                      that owner's keys (metadata only)
+revoke_api_key    { id: uuid, owner: string }            the revoked key's audit record
 ```
+
+The last three are RDS-backed and operate on the same `api_keys` table as the REST API in
+[`src/routes.ts`](src/routes.ts), so a key an agent mints over MCP appears in the web UI and vice
+versa. `create_api_key` returns the plaintext key exactly once — only its SHA-256 digest is
+stored, so it cannot be retrieved afterwards.
 
 Every tool call gets its own span (`mcp.tool/<name>`) and increments the
 `mcp.tool.invocations` counter (labelled `tool` + `status`). Add your own tools in

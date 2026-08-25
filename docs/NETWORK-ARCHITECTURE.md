@@ -1,7 +1,7 @@
 # Network Architecture
 
 The VPC uses a **three-tier subnet layout per AZ**, derived deterministically from the
-VPC CIDR (`terraform/main.tf` locals). Default is 3 AZs → 9 subnets.
+VPC CIDR (`terraform/network.tf` locals). Default is 3 AZs → 9 subnets.
 
 ```
 VPC 10.20.0.0/16  (az_count=3)
@@ -33,7 +33,7 @@ recommended production posture:
 Cost: ~$97/mo (3× NAT hourly + data) vs. ~$32/mo for a single shared NAT. Set
 `single_nat_gateway = true` in `terraform.tfvars` for the cheap demo posture.
 
-The **S3 gateway endpoint** (`aws_vpc_endpoint.s3` in main.tf) is free and keeps
+The **S3 gateway endpoint** (`aws_vpc_endpoint.s3` in network.tf) is free and keeps
 Loki→S3 chunk traffic off the metered NAT entirely.
 
 ## The database tier — why it exists (and why RDS does NOT require it)

@@ -1,5 +1,5 @@
 # Karpenter EC2NodeClass — how nodes are launched. Discovers subnets/SGs by the
-# karpenter.sh/discovery=<cluster> tag applied in Terraform (main.tf).
+# karpenter.sh/discovery=<cluster> tag applied in Terraform (network.tf, cluster.tf).
 apiVersion: karpenter.k8s.aws/v1
 kind: EC2NodeClass
 metadata:
@@ -8,7 +8,7 @@ spec:
   amiFamily: AL2023                # current default AMI family
   amiSelectorTerms:
     - alias: al2023@latest
-  role: eks-golden-karpenter       # stable node role name pinned in module.karpenter (main.tf)
+  role: eks-golden-karpenter       # stable node role name pinned in module.karpenter (compute.tf)
   # Karpenter derives max-pods from raw ENI IP slots and does NOT inspect the VPC CNI, so it
   # cannot discover prefix delegation on its own (Karpenter's own troubleshooting guide pairs
   # "enable prefix delegation" with "set maxPods"). Unset, every 1-vCPU m*.medium this NodePool

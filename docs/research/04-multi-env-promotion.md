@@ -158,7 +158,7 @@ gitops/
 The base is deliberately NOT applyable on its own: `namespace:` is stripped from all three
 manifests and the image is the sentinel `PLACEHOLDER_IMAGE`. If someone re-adds a namespace
 to the base, all three envs collapse into one and prod is overwritten by dev's next sync —
-so `scripts/kustomize_overlay_gate.py` asserts against exactly that (§6).
+so `scripts/helm_values_gate.py` asserts against exactly that (§6).
 
 Env deltas as shipped:
 
