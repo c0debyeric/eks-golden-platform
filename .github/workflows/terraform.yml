@@ -107,11 +107,32 @@ jobs:
       # ~1GiB, the node OOMs hard enough to kill its own kubelet, and every pod on it hangs
       # Terminating forever because nothing is left to reap them. That is precisely the
       # 2026-07-29 c9g.medium failure. Assert the floor exists so it can't silently regress.
-      - name: Karpenter — NodePool declares a memory floor
+      - name: Karpenter — NodePool floor can host the largest singleton pod
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import sys, yaml
+
+          # The floor is not a round number picked for comfort — it is derived from the
+          # largest memory LIMIT any singleton workload declares. Prometheus, Loki and
+          # Tempo each run as one replica, so their peak footprint is a property of the
+          # cluster that no amount of scaling out can spread.
+          #
+          # Two separate outages came from getting this wrong in both directions:
+          #   * No floor at all  -> a 2GiB node whose kubelet was OOM-killed by the pod
+          #                         density prefix delegation advertises (2026-07-29).
+          #   * A 4096MiB floor  -> 1-vCPU *.medium nodes with ~2.98GiB ALLOCATABLE, which
+          #                         cannot back Prometheus's 3Gi limit. It OOM-looped for
+          #                         five days while the OTel gateway dropped 10.4M metric
+          #                         points, and nothing but that one pod looked unhealthy.
+          #
+          # So the gate checks the real relationship instead of a constant: node
+          # allocatable must exceed the biggest limit, with headroom. Roughly 25% of an
+          # instance's advertised memory is lost to kubelet/system reservations and the
+          # EKS AMI, hence the 0.75 factor.
+          FLOOR_MIB = 8191          # => >= 8192MiB instances
+          ALLOCATABLE_FRACTION = 0.75
+
           pool = yaml.safe_load(open("gitops/apps/karpenter/nodepool.yaml"))
           reqs = pool["spec"]["template"]["spec"]["requirements"]
           mem = [r for r in reqs if r["key"] == "karpenter.k8s.aws/instance-memory"]
@@ -121,9 +142,54 @@ jobs:
                   "Without a floor Karpenter may select a ~2GiB node that OOM-kills its kubelet."
               )
           floor = min(int(v) for r in mem for v in r["values"])
-          if floor < 4095:
-              sys.exit(f"FAIL: instance-memory floor {floor}MiB is below the 4095MiB minimum.")
-          print(f"PASS: NodePool memory floor = {floor}MiB (>= 4095)")
+          if floor < FLOOR_MIB:
+              sys.exit(
+                  f"FAIL: instance-memory floor {floor}MiB is below the {FLOOR_MIB}MiB minimum.\n"
+                  "       Below this, Karpenter can select a node with less allocatable memory\n"
+                  "       than the observability singletons' limits, so they can never start."
+              )
+
+          def to_mib(value: str) -> int:
+              value = str(value).strip()
+              for suffix, mult in (("Gi", 1024), ("Mi", 1), ("G", 1000), ("M", 1)):
+                  if value.endswith(suffix):
+                      return int(float(value[: -len(suffix)]) * mult)
+              return int(int(value) / (1024 * 1024))
+
+          # Largest singleton memory limit committed anywhere in gitops/apps.
+          singletons = {
+              "prometheus": ("gitops/apps/kube-prometheus-stack/values.yaml",
+                             ("prometheus", "prometheusSpec", "resources", "limits", "memory")),
+              "loki":       ("gitops/apps/loki/values.yaml",
+                             ("singleBinary", "resources", "limits", "memory")),
+              "tempo":      ("gitops/apps/tempo/values.yaml",
+                             ("tempo", "resources", "limits", "memory")),
+          }
+
+          budget = int(floor * ALLOCATABLE_FRACTION)
+          worst = 0
+          for name, (path, keys) in singletons.items():
+              node = yaml.safe_load(open(path))
+              for k in keys:
+                  node = (node or {}).get(k)
+                  if node is None:
+                      break
+              if node is None:
+                  print(f"note: {name} declares no memory limit — skipping")
+                  continue
+              limit = to_mib(node)
+              worst = max(worst, limit)
+              status = "OK  " if limit <= budget else "FAIL"
+              print(f"{status} {name:11s} limit={limit}MiB  node budget={budget}MiB")
+              if limit > budget:
+                  sys.exit(
+                      f"FAIL: {name}'s {limit}MiB limit exceeds the ~{budget}MiB allocatable on the\n"
+                      f"       smallest node this NodePool may provision ({floor + 1}MiB advertised).\n"
+                      "       Raise the instance-memory floor, or lower the limit."
+                  )
+
+          print(f"PASS: floor {floor}MiB (~{budget}MiB allocatable) hosts the largest "
+                f"singleton limit ({worst}MiB)")
           PY
 
       # Multi-env Helm values: dev/stage/prod are three NAMESPACES on the one

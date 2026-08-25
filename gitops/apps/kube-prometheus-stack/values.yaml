@@ -57,9 +57,34 @@ prometheus:
     probeSelectorNilUsesHelmValues: false
     scrapeConfigSelectorNilUsesHelmValues: false
 
+    # SIZED FROM THE HEAD BLOCK, NOT FROM TASTE.
+    #
+    # The previous 1Gi ceiling put this pod in a WAL-replay death spiral that ran
+    # for five days and 1365 restarts. The mechanism is worth stating because the
+    # symptom points at the wrong thing:
+    #
+    #   1. Prometheus is OOMKilled. On restart it must replay the write-ahead log
+    #      to rebuild the head block in memory.
+    #   2. Replay costs MORE memory than steady state, so it OOMs again — earlier
+    #      each time, since the WAL only grows.
+    #   3. The head is never compacted, so the WAL is never truncated. It reached
+    #      3401 segments / 234MB, and the pod never once finished starting.
+    #
+    # From the on-disk block metadata this instance carries ~120k active series.
+    # At Prometheus's ~8KB/series for head chunks plus the index, that is ~1GB of
+    # live heap before a single query — so a 1Gi *limit* could not have worked at
+    # any point, and no amount of restarting was going to fix it. Go also needs
+    # roughly 2x live heap before GC settles, hence 3Gi rather than 1.5Gi.
+    #
+    # This DEPENDS on the Karpenter NodePool's instance-memory floor being high
+    # enough to host it: the floor was 4096MiB, which selects 1-vCPU *.medium
+    # nodes with only ~2.98GiB allocatable — a node that physically cannot back
+    # this limit. Both were raised together; see gitops/apps/karpenter/nodepool.yaml.
+    # Recount before changing either: sum numSeries across the newest blocks in
+    # /prometheus/prometheus-db/01*/meta.json.
     resources:
-      requests: { cpu: 200m, memory: 512Mi }
-      limits: { memory: 1Gi }
+      requests: { cpu: 200m, memory: 2Gi }
+      limits: { memory: 3Gi }
     storageSpec:
       volumeClaimTemplate:
         spec:

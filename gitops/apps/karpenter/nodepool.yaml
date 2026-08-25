@@ -30,12 +30,30 @@ spec:
         # allocatable pods=40) died ~13s after joining, stranding cert-manager + external-secrets
         # + the whole ArgoCD control plane and blocking the argo-cd 10.2.1 upgrade.
         #
-        # 4096MiB is the floor where allocatable RAM (~3.2GiB) is credible against the pod density
-        # the CNI advertises. Gt (not Gte) because the enum is version-dependent -- Karpenter
-        # added Gte/Lte in 1.14, so Gt keeps this manifest valid on older CRDs too.
+        # RAISED 4096 -> 8192. The old floor stopped the kubelet-killing failure above but was
+        # still too low for what the cluster actually has to run, and that showed up as a second,
+        # quieter outage.
+        #
+        # 4096MiB selects the 1-vCPU *.medium tier (m9g.medium et al), whose ALLOCATABLE memory is
+        # ~2.98GiB once kubelet/system reservations are taken -- so ~2.9GiB is the largest limit
+        # any single pod on such a node can actually be backed by. Prometheus needs a 3Gi ceiling
+        # at this cluster's ~120k active series, so it could never be scheduled somewhere capable
+        # of honouring it, and instead sat in a WAL-replay OOM loop for five days while the OTel
+        # gateway dropped 10.4M metric points on the floor. Nothing reported unhealthy except the
+        # one pod: logs and traces kept flowing, so the cluster looked fine.
+        #
+        # 8192MiB (~7GiB allocatable on m7g.large / c7g.large) leaves real headroom for the
+        # observability data plane -- Prometheus, Loki and Tempo are all singletons here, so their
+        # peak footprint is a property of the cluster, not something replicas can spread.
+        #
+        # The 1-vCPU tier was also CPU-bound in practice: those nodes sat at 98% of allocatable CPU
+        # requests, so the scheduler had no room to place anything further regardless of memory.
+        #
+        # Gt (not Gte) because the enum is version-dependent -- Karpenter added Gte/Lte in 1.14,
+        # so Gt keeps this manifest valid on older CRDs too.
         - key: karpenter.k8s.aws/instance-memory
           operator: Gt
-          values: ["4095"]                      # => >= 4096MiB; excludes the fatal *.medium tier
+          values: ["8191"]                      # => >= 8192MiB; excludes the 1-vCPU *.medium tier
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass
