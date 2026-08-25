@@ -117,3 +117,53 @@ done
 
 Standing S3 storage cost for these is negligible (a few $/mo at portfolio log/trace
 volume), so the default is to keep them.
+
+---
+
+## 5. Values that used to be pinned to ONE cluster instance (fixed — here's what to watch)
+
+The repo's headline claim is a teardown/rebuild lifecycle: `make down` returns you to
+~$0, `make up` rebuilds, and Argo CD restores the workload layer from Git. That claim
+was quietly false. Two committed GitOps values were literals that are only correct for
+a single build of the platform, and both would have been wrong on the first rebuild:
+
+| file | was | why it breaks on rebuild |
+|---|---|---|
+| `gitops/bootstrap/karpenter.yaml` | `clusterEndpoint: https://<hash>...` | EKS mints a new API endpoint per cluster. Karpenter would launch nodes that cannot reach the API server to join, so the cluster comes up with **no workload capacity** — while Karpenter itself stays Running and Healthy, so nothing points at it. |
+| `gitops/apps/alb-controller/values.yaml` | `vpcId: vpc-0c...` | `destroy` deletes the VPC; `apply` creates one with a new id. The controller CrashLoopBackOffs, and its admission webhook then rejects **every** Service/Ingress cluster-wide, stalling the whole app-of-apps sync behind it. |
+
+Neither failure names the stale value, and the Karpenter one carried no warning
+comment at all. Both are now resolved at RUNTIME instead of being committed:
+
+- Karpenter uses `settings.eksControlPlane: true`, which discovers cluster details
+  (endpoint included) via `eks:DescribeCluster`. The controller role granted by
+  `module.karpenter` already carries that action, so no IAM change is needed.
+- The ALB controller uses `vpcTags` instead of `vpcId` — the chart's documented
+  alternative for the pods-cannot-reach-IMDS case that forced an explicit value here
+  in the first place. Tags are ANDed and both are derived from Terraform variables
+  (`erics-${var.name}-vpc` from `name`, and `Project` from `tags`), so they are stable
+  across rebuilds in a way an id can never be.
+
+**What still needs a human on rebuild:** nothing, for these two. But the tag values
+above track `name` and `tags` in `terraform.tfvars`. If you rename the platform, update
+`vpcTags` in `gitops/apps/alb-controller/values.yaml` to match, or the controller will
+fail to resolve a VPC and take Service admission down with it.
+
+Sanity check after any `make up`, before trusting the cluster:
+
+```bash
+# Karpenter resolved an endpoint and can launch nodes
+kubectl -n kube-system logs deploy/karpenter | grep -i 'cluster.endpoint\|failed'
+kubectl get nodeclaims          # should reach Ready, not sit Unknown
+
+# The ALB controller resolved exactly one VPC (no CrashLoop, no webhook outage)
+kubectl -n kube-system get pods -l app.kubernetes.io/name=aws-load-balancer-controller
+kubectl -n kube-system logs deploy/aws-load-balancer-controller | grep -i 'vpc\|failed to get'
+```
+
+Anything else that hardcodes a per-build identifier belongs in this table. Grep for one
+before committing:
+
+```bash
+grep -rn 'vpc-[0-9a-f]\{8,\}\|\.gr7\..*\.eks\.amazonaws\.com' gitops/ charts/
+```

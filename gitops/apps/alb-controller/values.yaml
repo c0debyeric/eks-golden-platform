@@ -4,19 +4,38 @@ clusterName: eks-golden          # must match var.name in Terraform
 serviceAccount:
   create: true
   name: aws-load-balancer-controller
-# WHY region + vpcId are REQUIRED (not auto-discovered): with EKS Pod Identity the controller
-# pod has NO IMDS access (node metadata hop limit is 1, and pods aren't on the host network),
+# WHY region and the VPC must be given EXPLICITLY (not auto-discovered): with EKS Pod Identity
+# the controller pod has NO IMDS access (node metadata hop limit is 1, and pods aren't on the
+# host network),
 # so the default "discover region/VPC from IMDS" path fails with
 # "failed to get VPC ID: ... ec2imds: GetMetadata ... context deadline exceeded" and the
 # controller CrashLoopBackOffs. Its mutating webhook then blocks EVERY Service create
 # cluster-wide, stalling the entire app-of-apps sync. Passing these explicitly is the
 # documented Pod-Identity requirement.
 region: us-east-1
-# NOTE: vpcId is environment-specific — it changes on a fresh `terraform apply`. For a
-# reproducible bring-up, read the live value with:
-#   aws eks describe-cluster --name eks-golden --query cluster.resourcesVpcConfig.vpcId
-# and update this field (or template it via an ApplicationSet parameter). See docs/TEARDOWN-GOTCHAS.md.
-vpcId: vpc-0c53049f6bb190614
+# Discover the VPC by TAG, not by id.
+#
+# This was `vpcId: vpc-0c...`, a literal that is only correct for one build of the
+# platform. `make down` destroys the VPC and `make up` creates a new one with a new
+# id, so after any rebuild this file pointed at a VPC that no longer existed. The
+# controller would come up, fail to resolve it, and CrashLoopBackOff — and because
+# its admission webhook then rejects every Service and Ingress in the cluster, the
+# whole app-of-apps sync stalls behind it. The repo's headline claim is a
+# teardown/rebuild lifecycle, so a value that only survives until the first teardown
+# is a real defect, not a nit. The old comment acknowledged the problem and asked the
+# next operator to remember to hand-edit this line; encoding it is better.
+#
+# vpcTags is the chart's documented alternative to vpcId for exactly the
+# pod-cannot-reach-IMDS case described above. Tags are ANDed, and both of these are derived
+# from Terraform variables (`erics-${var.name}-vpc` and var.tags), so they are stable
+# across rebuilds in a way an id can never be. Verified: this pair matches exactly one
+# VPC in the account, the controller role already carries ec2:DescribeVpcs, and the
+# chart renders it as --aws-vpc-tags=Name=...,Project=... in place of --aws-vpc-id.
+#
+# If you change `name` or `tags` in terraform.tfvars, change these to match.
+vpcTags:
+  Name: erics-eks-golden-vpc
+  Project: eks-golden-platform
 
 # Let cert-manager issue the admission webhook's serving certificate.
 #

@@ -48,8 +48,25 @@ spec:
       valuesObject:
         settings:
           clusterName: eks-golden
-          # Endpoint + interruption queue from Terraform (module.karpenter / cluster).
-          clusterEndpoint: https://649F2C67144C457AE3C5FCFFF29BF739.gr7.us-east-1.eks.amazonaws.com
+          # Let Karpenter resolve the API endpoint itself.
+          #
+          # This previously hardcoded the cluster's API endpoint as a literal, and EKS mints
+          # a new one for every cluster. `make down` + `make up` therefore
+          # left Karpenter pointed at an endpoint that no longer resolves, and the nodes it
+          # launched could not reach the API server to join -- so the rebuilt cluster would
+          # come up with no workload capacity and no obvious culprit, because Karpenter
+          # itself stays Running and Healthy while doing it. Unlike the ALB controller's
+          # vpcId, this one carried no warning that it needed hand-editing after a rebuild.
+          #
+          # eksControlPlane tells Karpenter to discover cluster details -- the endpoint
+          # included -- through the EKS DescribeCluster API instead. Verified against the
+          # pinned chart 1.14.0, whose values.yaml documents exactly this, and against the
+          # live controller role, which already grants eks:DescribeCluster, so this needs no
+          # IAM change. clusterEndpoint is now simply absent and resolved at runtime, which
+          # is what makes it survive a teardown.
+          eksControlPlane: true
+          # Derived from the cluster name in Terraform (module.karpenter), so this one IS
+          # stable across rebuilds and is safe to state literally.
           interruptionQueue: Karpenter-eks-golden
         serviceAccount:
           # Pod Identity targets this SA name; do NOT add an IRSA role annotation.
