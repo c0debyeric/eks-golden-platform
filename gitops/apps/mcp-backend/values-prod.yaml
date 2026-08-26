@@ -12,25 +12,20 @@
 # Prod's Argo CD Application has NO `automated` syncPolicy: merging a promotion
 # PR changes desired state, and a human then triggers the sync.
 environment: prod
-
 replicaCount: 3
-
 podDisruptionBudget:
   enabled: true
   minAvailable: 2
-
 # All three environments share one RDS database, so each owns a schema. Without
 # this, dev traffic writes into the table prod reads.
 database:
   schema: mcp_prod
-
 resources:
   requests:
     cpu: 100m
     memory: 128Mi
   limits:
     memory: 384Mi
-
 # Rewritten by the promote workflow on a stage -> prod promotion.
 #
 # NOTE: this previously read `prod-bootstrap`, a tag that was never pushed to
@@ -38,5 +33,5 @@ resources:
 # Pinned here to the same digest stage validated. Prod still does not auto-sync,
 # so this changes desired state only.
 image:
-  tag: 8405d2281027
-  digest: sha256:28e54473384b015082369a5face9197a35a5c8744169e435596523ce3ebd6d44
+  tag: 1a5d666318a1
+  digest: sha256:4de967b1c7f36511231bb430cd9a91a4e76222e3158dd11bd19d54ddd03b7b18
