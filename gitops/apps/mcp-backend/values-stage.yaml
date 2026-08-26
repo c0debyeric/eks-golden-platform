@@ -8,18 +8,14 @@
 # The only intentional differences from prod are resource headroom and the
 # promotion gate: stage auto-syncs, prod does not.
 environment: stage
-
 replicaCount: 2
-
 podDisruptionBudget:
   enabled: true
   minAvailable: 1
-
 # All three environments share one RDS database, so each owns a schema.
 database:
   schema: mcp_stage
-
 # Rewritten by the promote workflow on a dev -> stage promotion.
 image:
-  tag: 8405d2281027
-  digest: sha256:28e54473384b015082369a5face9197a35a5c8744169e435596523ce3ebd6d44
+  tag: 1a5d666318a1
+  digest: sha256:4de967b1c7f36511231bb430cd9a91a4e76222e3158dd11bd19d54ddd03b7b18
